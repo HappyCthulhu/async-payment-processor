@@ -5,20 +5,36 @@
 Правила обработки и бизнес-значения принадлежат
 [спецификации](spec.md); здесь остаются только типы, формы данных и операции.
 
-## Структура пакета
+## Границы кода и структура пакета
 
 Код располагается в `src/payment_processor/`.
 
 | Область | Ответственность |
 | --- | --- |
-| `api/` | FastAPI app, endpoint'ы, Pydantic-схемы и dependency для API key. |
-| `db/` | SQLAlchemy models, session factory, Alembic и repository-операции. |
-| `messaging/` | FastStream broker, объявления exchange/queue и event-модели. |
-| `services/` | Outbox relay, обработчик платежа, gateway и webhook adapters. |
-| `core/` | Конфигурация, enum'ы, ошибки и неизменяемые domain-типы. |
+| `domain/` | Enum'ы, value-типы и чистые правила переходов payment. Не содержит отдельной ORM-дублирующей сущности `Payment`. |
+| `application/` | Use case'ы и `Protocol`-порты для хранилища, gateway, webhook и publisher. |
+| `infrastructure/db/` | SQLAlchemy-модели, session factory, Alembic и конкретные repository. |
+| `infrastructure/messaging/` | FastStream broker, exchange, queue и event-модели. |
+| `infrastructure/integrations/` | Gateway emulator и HTTP-клиент webhook. |
+| `api/` | FastAPI app, routers, Pydantic-схемы, API key dependency и запуск relay в lifespan. |
+| `worker/` | FastStream consumer и wiring use case'ов worker. |
+| `core/` | Конфигурация, логирование и явный composition root. |
 
-Это рекомендуемая структура, а не требование к каждому файлу. Тесты опираются на
-поведение endpoint'ов, БД и сообщений, а не на конкретные private-функции.
+Зависимости направлены внутрь: `api` и `worker` вызывают `application`, а
+`infrastructure` реализует его порты. `domain` не импортирует FastAPI,
+Pydantic, SQLAlchemy, FastStream или `httpx`; `application` не импортирует их
+конкретные реализации. Wiring выполняется явно при старте API и worker, без
+отдельной DI-библиотеки.
+
+Use case'ы: `create_payment`, `get_payment`, `relay_outbox` и
+`handle_payment_event`. Каждый описывает один сценарий; HTTP-router и consumer
+не содержат бизнес-правил. `AsyncSession` остаётся деталью infrastructure и
+служит практическим Unit of Work — отдельную общую UoW-абстракцию не вводим.
+
+Используются только предметные порты: `PaymentRepository`, `OutboxRepository`,
+`PaymentGateway`, `WebhookClient`, `EventPublisher`. Универсальный
+`BaseRepository[T]`, CQRS/read model, Event Sourcing, mediator и дублирующая
+богатая domain-модель не входят в проект.
 
 ## Типы домена
 
