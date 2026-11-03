@@ -35,21 +35,21 @@ sequenceDiagram
     participant G as Gateway emulator
     participant H as Webhook endpoint
 
-    C->>A: POST payment + ключи
-    A->>P: BEGIN; payment + outbox; COMMIT
-    A-->>C: 202 pending
-    A->>P: claim pending outbox row
-    A->>R: publish event
-    R-->>A: publisher confirm
-    A->>P: mark outbox published
-    R->>W: delivery
-    W->>P: read payment state
-    W->>G: process immutable snapshot
-    G-->>W: succeeded / failed
-    W->>P: persist final payment status
-    W->>H: POST webhook
-    H-->>W: 2xx
-    W->>P: persist webhook delivery
+    C->>A: Create payment with keys
+    A->>P: Store payment and outbox in one transaction
+    A-->>C: Return pending payment
+    A->>P: Claim pending outbox record
+    A->>R: Publish event
+    R-->>A: Confirm publication
+    A->>P: Mark outbox record published
+    R->>W: Deliver event
+    W->>P: Read current payment state
+    W->>G: Process immutable event snapshot
+    G-->>W: Return final result
+    W->>P: Store final payment status
+    W->>H: Send webhook
+    H-->>W: Return successful response
+    W->>P: Store webhook delivery result
     W->>R: ACK
 ```
 
@@ -62,23 +62,25 @@ sequenceDiagram
     participant H as Webhook endpoint
     participant P as PostgreSQL
 
-    R->>W: attempt 1
-    W->>H: POST webhook
-    H-->>W: timeout / non-2xx
-    W->>R: publish retry.1
-    R-->>W: publisher confirm
-    W->>R: ACK original
-    R-->>R: TTL 1s, route back to payments.new
-    R->>W: attempt 2
-    W->>H: POST webhook
-    H-->>W: non-2xx
-    W->>R: publish retry.2; confirm; ACK original
-    R-->>R: TTL 2s, route back to payments.new
-    R->>W: attempt 3
-    W->>H: POST webhook
-    H-->>W: non-2xx
-    W->>P: persist exhaustion
-    W->>R: reject to DLQ
+    R->>W: Deliver attempt one
+    W->>H: Send webhook
+    H-->>W: Return error
+    W->>R: Publish first retry
+    R-->>W: Confirm publication
+    W->>R: Acknowledge original event
+    R-->>R: Delay one second then route to main queue
+    R->>W: Deliver attempt two
+    W->>H: Send webhook
+    H-->>W: Return error
+    W->>R: Publish second retry
+    R-->>W: Confirm publication
+    W->>R: Acknowledge original event
+    R-->>R: Delay two seconds then route to main queue
+    R->>W: Deliver attempt three
+    W->>H: Send webhook
+    H-->>W: Return error
+    W->>P: Store exhausted delivery state
+    W->>R: Reject event to dead letter queue
 ```
 
 ## Очереди и ответственность
