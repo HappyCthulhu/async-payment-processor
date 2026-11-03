@@ -86,11 +86,15 @@ mark_outbox_published(event_id, published_at)
 record_outbox_publish_failure(event_id, error)
 ```
 
+При shutdown relay прекращает новый `claim`; запись остаётся `pending`, пока
+Relay не получит publisher confirm и не вызовет `mark_outbox_published`. Это
+сознательно допускает повторную публикацию после рестарта.
+
 Worker читает payment state перед внешними действиями и записывает только
 допустимые изменения:
 
 ```text
-get_payment_processing_state(payment_id)
+get_payment_state_for_handling(payment_id)
 record_gateway_outcome(payment_id, status, processed_at)
 record_webhook_delivery(payment_id, delivered_at)
 record_webhook_failure(payment_id, attempt, error, exhausted_at?)
