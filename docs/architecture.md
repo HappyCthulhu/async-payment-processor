@@ -4,9 +4,17 @@
 
 ```mermaid
 flowchart LR
-    Client[curl / backend магазина] -->|POST payment\nX-API-Key + Idempotency-Key| API[API + outbox relay]
-    API -->|одна транзакция| DB[(PostgreSQL\npayments + outbox)]
-    API -->|broker confirm| Exchange{{RabbitMQ\npayments.exchange}}
+    Client[curl / backend магазина] -->|POST payment\nX-API-Key and Idempotency-Key| API
+    subgraph ApiContainer[api container]
+        direction TB
+        API[FastAPI API]
+        Relay[Outbox relay\nbackground task]
+    end
+    API -->|создаёт payment and outbox\nin one transaction| DB[(PostgreSQL\npayments and outbox)]
+    Relay -->|claim pending outbox rows| DB
+    Relay -->|publish event| Exchange{{RabbitMQ\npayments.exchange}}
+    Exchange -->|publisher confirm| Relay
+    Relay -->|mark outbox published| DB
     Exchange --> Work[payments.new]
     Work -->|delivery| Worker[Один FastStream worker]
     Worker -->|payment state + результат| DB
@@ -19,6 +27,14 @@ flowchart LR
     Worker --> DLQ[payments.dlq]
 ```
 
+Relay — отдельный **логический компонент**, но не отдельный Compose-сервис: при
+старте `api`-контейнера FastAPI lifespan запускает один фоновый asyncio-цикл.
+HTTP-обработчик только записывает `payment` и `outbox` в транзакции и никогда не
+публикует сообщение в RabbitMQ сам. Relay периодически захватывает pending
+строки из PostgreSQL, публикует их и отмечает `published` только после broker
+confirm. Его можно вынести в самостоятельный процесс без изменения контракта с
+БД или RabbitMQ; для объёма тестового пока оставляем его внутри `api`-контейнера.
+
 `webhook-sink` подключается как demo-сервис в Docker Compose. Он не участвует
 в обработке платежа: принимает callback и позволяет увидеть результат в логах
 или через диагностический endpoint.
@@ -28,7 +44,8 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant C as Клиент
-    participant A as API / relay
+    participant A as API
+    participant L as Outbox relay
     participant P as PostgreSQL
     participant R as RabbitMQ
     participant W as Worker
@@ -38,10 +55,10 @@ sequenceDiagram
     C->>A: Create payment with keys
     A->>P: Store payment and outbox in one transaction
     A-->>C: Return pending payment
-    A->>P: Claim pending outbox record
-    A->>R: Publish event
-    R-->>A: Confirm publication
-    A->>P: Mark outbox record published
+    L->>P: Claim pending outbox record
+    L->>R: Publish event
+    R-->>L: Confirm publication
+    L->>P: Mark outbox record published
     R->>W: Deliver event
     W->>P: Read current payment state
     W->>G: Process immutable event snapshot
