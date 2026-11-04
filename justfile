@@ -27,3 +27,15 @@ current:
 # Show the migration graph.
 history:
     uv run alembic history --verbose
+
+# Start PostgreSQL for local development and migrations.
+db-up:
+    docker compose up -d postgres
+
+# Stop local PostgreSQL without deleting its data volume.
+db-down:
+    docker compose down
+
+# Follow PostgreSQL logs.
+db-logs:
+    docker compose logs --follow postgres
