@@ -22,3 +22,17 @@ class CreatePaymentResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(extra="forbid")
+
+
+class GetPaymentByIdResponse(BaseModel):
+    payment_id: UUID
+    amount: Decimal
+    currency: Literal["RUB", "USD", "EUR"]
+    description: str
+    metadata: dict[str, JsonValue]
+    webhook_url: HttpUrl
+    status: Literal["pending", "succeeded", "failed"]
+    created_at: datetime
+    processed_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)

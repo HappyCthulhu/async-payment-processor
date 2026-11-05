@@ -75,6 +75,7 @@ mypy-init-return = true
 
 [tool.ruff.lint.flake8-type-checking.runtime-evaluated-decorators]
 "fastapi.APIRouter.post" = "required"
+"fastapi.APIRouter.get" = "required"
 
 [tool.ruff.lint.isort]
 force-wrap-aliases = true

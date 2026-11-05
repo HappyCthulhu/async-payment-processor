@@ -1,11 +1,11 @@
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
 from payment_processor.application.errors import IdempotencyConflictError
 from payment_processor.application.ports import PaymentRepository
-from payment_processor.application.results import PaymentResult
+from payment_processor.application.results import PaymentDetails, PaymentResult
 from payment_processor.infrastructure.db.models import OutboxEvent, OutboxEventType, Payment, PaymentCurrency
 
 if TYPE_CHECKING:
@@ -79,3 +79,22 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             status=payment_obj.status.value,
             created_at=payment_obj.created_at,
         )
+
+    async def get_by_id(self, payment_id: UUID) -> PaymentDetails | None:
+        async with self._session.begin():
+            statement = select(Payment).filter_by(id=payment_id)
+            payments = await self._session.scalars(statement)
+            result = payments.one_or_none()
+            if result is not None:
+                return PaymentDetails(
+                    payment_id=result.id,
+                    amount=result.amount,
+                    currency=result.currency.value,
+                    description=result.description,
+                    metadata=result.payment_metadata,
+                    webhook_url=result.webhook_url,
+                    status=result.status.value,
+                    created_at=result.created_at,
+                    processed_at=result.processed_at,
+                )
+            return result

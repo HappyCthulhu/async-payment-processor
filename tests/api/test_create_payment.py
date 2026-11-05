@@ -1,21 +1,15 @@
-from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
-import pytest_asyncio
 from fastapi import status
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from payment_processor.api.app import create_app
-from payment_processor.api.dependencies import get_session
 from payment_processor.core.config import settings
 from payment_processor.infrastructure.db.models import OutboxEvent, Payment
 
 if TYPE_CHECKING:
-    from fastapi import FastAPI
-    from httpx import Response
+    from httpx import AsyncClient, Response
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
@@ -27,26 +21,6 @@ PAYMENT_REQUEST = {
     "metadata": {"order_id": "42"},
     "webhook_url": "http://webhook-sink:8080/callbacks/payments",
 }
-
-
-@pytest.fixture
-def app(db_session_factory: async_sessionmaker[AsyncSession]) -> Iterator[FastAPI]:
-    app = create_app()
-
-    async def get_test_session() -> AsyncIterator[AsyncSession]:
-        async with db_session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_session] = get_test_session
-    yield app
-    app.dependency_overrides.clear()
-
-
-@pytest_asyncio.fixture
-async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
-    transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as async_client:
-        yield async_client
 
 
 def payment_headers(idempotency_key: str = "api-test-key") -> dict[str, str]:

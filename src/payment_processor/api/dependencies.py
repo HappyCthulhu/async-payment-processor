@@ -5,6 +5,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from payment_processor.application.use_cases.create_payment import CreatePaymentUseCase
+from payment_processor.application.use_cases.get_payment_by_id import GetPaymentUseCase
 from payment_processor.core.config import settings
 from payment_processor.infrastructure.db.repositories import SqlAlchemyPaymentRepository
 from payment_processor.infrastructure.db.session import session_factory
@@ -30,3 +31,9 @@ def get_create_payment_use_case(
     repository: Annotated[SqlAlchemyPaymentRepository, Depends(get_payment_repository)],
 ) -> CreatePaymentUseCase:
     return CreatePaymentUseCase(repository)
+
+
+def get_payment_by_id_use_case(
+    repository: Annotated[SqlAlchemyPaymentRepository, Depends(get_payment_repository)],
+) -> GetPaymentUseCase:
+    return GetPaymentUseCase(repository)
