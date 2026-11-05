@@ -44,10 +44,28 @@ db-logs:
 db-shell:
     docker compose exec postgres psql -U "${POSTGRES_USER:-payment_user}" -d "${POSTGRES_DB:-payment_processor}"
 
+# Start RabbitMQ and wait until AMQP and Management UI are ready.
+rabbit-up:
+    docker compose up -d --wait rabbitmq
+
+# Follow RabbitMQ logs.
+rabbit-logs:
+    docker compose logs --follow rabbitmq
+
+# Open RabbitMQ Management UI in a browser: http://localhost:15672.
+rabbit-ui:
+    @echo "RabbitMQ Management UI: http://localhost:${RABBITMQ_MANAGEMENT_PORT:-15672}"
+    @echo "Credentials: ${RABBITMQ_DEFAULT_USER:-payment_broker} / (see .env for password)"
+
+# Start all infrastructure required by the current integration-test suite.
+infra-up:
+    docker compose up -d --wait postgres rabbitmq
+
 # Run the FastAPI application locally with reload enabled.
 api:
     uv run uvicorn payment_processor.api.app:app --reload
 
 # Run the automated test suite against an isolated PostgreSQL schema.
 test:
+    just infra-up
     APP_DB_ECHO=false uv run pytest
