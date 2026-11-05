@@ -39,3 +39,15 @@ db-down:
 # Follow PostgreSQL logs.
 db-logs:
     docker compose logs --follow postgres
+
+# Open psql inside the local PostgreSQL container.
+db-shell:
+    docker compose exec postgres psql -U "${POSTGRES_USER:-payment_user}" -d "${POSTGRES_DB:-payment_processor}"
+
+# Run the FastAPI application locally with reload enabled.
+api:
+    uv run uvicorn payment_processor.api.app:app --reload
+
+# Run the automated test suite against an isolated PostgreSQL schema.
+test:
+    APP_DB_ECHO=false uv run pytest

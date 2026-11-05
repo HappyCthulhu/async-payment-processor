@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Enum as SAEnum,
     ForeignKey,
     Integer,
     Numeric,
@@ -14,7 +15,6 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy import Enum as SAENUM
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import DateTime
 
@@ -50,7 +50,7 @@ class Payment(BaseModel):
     idempotency_key: Mapped[str] = mapped_column(String(255), unique=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     status: Mapped[PaymentStatus] = mapped_column(
-        SAENUM(
+        SAEnum(
             PaymentStatus,
             name="payment_status",
             values_callable=lambda enum_cls: [item.value for item in enum_cls],
@@ -64,11 +64,11 @@ class Payment(BaseModel):
     webhook_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     webhook_delivery_exhausted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     currency: Mapped[PaymentCurrency] = mapped_column(
-        SAENUM(
+        SAEnum(
             PaymentCurrency,
             name="payment_currency",
             values_callable=lambda enum_cls: [item.value for item in enum_cls],
-        )
+        ),
     )
     description: Mapped[str] = mapped_column(Text)
     payment_metadata: Mapped[dict[str, object]] = mapped_column("metadata", JSON)
@@ -77,24 +77,22 @@ class Payment(BaseModel):
 
 class OutboxEvent(BaseModel):
     __tablename__ = "outbox"
-    __table_args__ = (
-        UniqueConstraint("payment_id", "event_type", name="uq_outbox_payment_event_type"),
-    )
+    __table_args__ = (UniqueConstraint("payment_id", "event_type", name="uq_outbox_payment_event_type"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     payment_id: Mapped[UUID] = mapped_column(ForeignKey("payments.id"))
 
     event_type: Mapped[OutboxEventType] = mapped_column(
-        SAENUM(
+        SAEnum(
             OutboxEventType,
             name="outbox_event_type",
             values_callable=lambda enum_cls: [item.value for item in enum_cls],
-        )
+        ),
     )
     event_version: Mapped[int] = mapped_column(Integer, default=1)
     payload: Mapped[dict[str, object]] = mapped_column(JSON)
     status: Mapped[OutboxStatus] = mapped_column(
-        SAENUM(
+        SAEnum(
             OutboxStatus,
             name="outbox_status",
             values_callable=lambda enum_cls: [item.value for item in enum_cls],
