@@ -1,14 +1,17 @@
 import asyncio
 from logging.config import fileConfig
+from typing import TYPE_CHECKING
 
 from sqlalchemy import pool
-from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 import payment_processor.infrastructure.db.models  # noqa: F401
 from alembic import context
 from payment_processor.core.config import settings
 from payment_processor.infrastructure.db.base import BaseModel
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -20,16 +23,7 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
 target_metadata = BaseModel.metadata
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
 
 
 def run_migrations_offline() -> None:

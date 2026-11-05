@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from decimal import Decimal
 
 
@@ -10,6 +11,6 @@ class CreatePaymentCommand:
     amount: Decimal
     currency: Literal["RUB", "USD", "EUR"]
     description: str
-    metadata: dict[str, object]
+    metadata: Mapping[str, object]
     webhook_url: str
     idempotency_key: str

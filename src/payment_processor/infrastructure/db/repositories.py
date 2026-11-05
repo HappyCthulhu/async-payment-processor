@@ -26,6 +26,8 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             scalars = await self._session.scalars(statement)
             payment_obj = scalars.one_or_none()
 
+            metadata = dict(command.metadata)
+
             if payment_obj is None:
                 payment_obj = Payment(
                     idempotency_key=command.idempotency_key,
@@ -33,7 +35,7 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
                     webhook_url=command.webhook_url,
                     currency=PaymentCurrency(command.currency),
                     description=command.description,
-                    payment_metadata=command.metadata,
+                    payment_metadata=metadata,
                 )
                 self._session.add(payment_obj)
                 await self._session.flush()
@@ -65,7 +67,7 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
                     (payment_obj.webhook_url, command.webhook_url),
                     (payment_obj.currency.value, command.currency),
                     (payment_obj.description, command.description),
-                    (payment_obj.payment_metadata, command.metadata),
+                    (payment_obj.payment_metadata, metadata),
                 ):
                     if pare[0] != pare[1]:
                         raise IdempotencyConflictError(

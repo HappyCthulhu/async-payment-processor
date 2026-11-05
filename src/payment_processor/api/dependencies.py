@@ -1,13 +1,13 @@
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
+from payment_processor.application.use_cases.create_payment import CreatePaymentUseCase
 from payment_processor.core.config import settings
+from payment_processor.infrastructure.db.repositories import SqlAlchemyPaymentRepository
 from payment_processor.infrastructure.db.session import session_factory
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def verify_api_key(api_key: Annotated[str | None, Header(alias="X-API-Key")] = None) -> None:
@@ -18,3 +18,15 @@ def verify_api_key(api_key: Annotated[str | None, Header(alias="X-API-Key")] = N
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with session_factory() as session:
         yield session
+
+
+def get_payment_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SqlAlchemyPaymentRepository:
+    return SqlAlchemyPaymentRepository(session)
+
+
+def get_create_payment_use_case(
+    repository: Annotated[SqlAlchemyPaymentRepository, Depends(get_payment_repository)],
+) -> CreatePaymentUseCase:
+    return CreatePaymentUseCase(repository)
