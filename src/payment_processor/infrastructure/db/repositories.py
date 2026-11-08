@@ -1,17 +1,27 @@
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 
 from payment_processor.application.errors import IdempotencyConflictError
-from payment_processor.application.ports import PaymentRepository
-from payment_processor.application.results import PaymentDetails, PaymentResult
-from payment_processor.infrastructure.db.models import OutboxEvent, OutboxEventType, Payment, PaymentCurrency
+from payment_processor.application.events import PaymentCreatedEvent
+from payment_processor.application.ports import OutboxRepository, PaymentRepository
+from payment_processor.application.results import ClaimedOutboxEvent, PaymentDetails, PaymentResult
+from payment_processor.infrastructure.db.models import (
+    OutboxEvent,
+    OutboxEventType,
+    OutboxStatus,
+    Payment,
+    PaymentCurrency,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from payment_processor.application.commands import CreatePaymentCommand
+
+CLAIM_LEASE_DURATION = timedelta(seconds=30)
 
 
 class SqlAlchemyPaymentRepository(PaymentRepository):
@@ -98,3 +108,81 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
                     processed_at=result.processed_at,
                 )
             return result
+
+
+class SqlAlchemyOutboxRepository(OutboxRepository):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def claim_pending_events(self, limit: int) -> list[ClaimedOutboxEvent]:
+
+        claimed_events: list[ClaimedOutboxEvent] = []
+        async with self._session.begin():
+            now = datetime.now(tz=UTC)
+            statement = (
+                select(OutboxEvent)
+                .where(
+                    or_(
+                        OutboxEvent.status == OutboxStatus.PENDING,
+                        and_(
+                            OutboxEvent.status == OutboxStatus.PROCESSING,
+                            OutboxEvent.lease_expires_at <= now,
+                        ),
+                    )
+                )
+                .order_by(OutboxEvent.created_at, OutboxEvent.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+            records = (await self._session.scalars(statement)).all()
+            for record in records:
+                claim_token = uuid4()
+                record.claim_token = claim_token
+                record.status = OutboxStatus.PROCESSING
+                record.lease_expires_at = now + CLAIM_LEASE_DURATION
+                record.publish_attempts += 1
+
+                claimed_event = ClaimedOutboxEvent(
+                    claim_token=claim_token, event=PaymentCreatedEvent.model_validate(record.payload)
+                )
+                claimed_events.append(claimed_event)
+
+        return claimed_events
+
+    async def mark_as_published(self, event_id: UUID, claim_token: UUID, published_at: datetime) -> None:
+        statement = (
+            update(OutboxEvent)
+            .where(
+                OutboxEvent.id == event_id,
+                OutboxEvent.claim_token == claim_token,
+                OutboxEvent.status == OutboxStatus.PROCESSING,
+            )
+            .values(
+                status=OutboxStatus.PUBLISHED,
+                published_at=published_at,
+                claim_token=None,
+                lease_expires_at=None,
+                last_error=None,
+            )
+        )
+
+        async with self._session.begin():
+            await self._session.execute(statement)
+
+    async def record_publish_failure(self, event_id: UUID, claim_token: UUID, error: str) -> None:
+        statement = (
+            update(OutboxEvent)
+            .filter_by(
+                id=event_id,
+                claim_token=claim_token,
+                status=OutboxStatus.PROCESSING,
+            )
+            .values(
+                last_error=error,
+                claim_token=None,
+                lease_expires_at=None,
+                status=OutboxStatus.PENDING,
+            )
+        )
+        async with self._session.begin():
+            await self._session.execute(statement)

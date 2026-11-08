@@ -23,13 +23,14 @@
 ## Локальная инфраструктура
 
 Скопируй `.env.example` в `.env` и при необходимости измени значения. Локальная
-БД запускается командой `just db-up`; по умолчанию она доступна на порту `5433`,
-чтобы не конфликтовать с PostgreSQL на `5432`. Готовность проверяет Docker healthcheck.
-После запуска можно выполнять Alembic-команды из `justfile`.
+PostgreSQL и RabbitMQ запускаются одной командой `just db-up`. PostgreSQL по
+умолчанию доступен на порту `5433`, чтобы не конфликтовать с PostgreSQL на
+`5432`. После запуска можно выполнять Alembic-команды из `justfile`.
 
-RabbitMQ запускается командой `just rabbit-up`. AMQP доступен на порту `5672`, а
-Management UI — на [http://localhost:15672](http://localhost:15672). Логин и
-пароль находятся в `.env`; команда `just rabbit-ui` напомнит адрес и логин.
+AMQP RabbitMQ доступен на порту `5672`, а Management UI — на
+[http://localhost:15672](http://localhost:15672). Логин и пароль находятся в
+`.env`; команда `just rabbit-ui` напомнит адрес и логин. `just rabbit-up`
+остаётся доступной, если нужно поднять только брокер.
 
-`just infra-up` поднимает PostgreSQL и RabbitMQ, а `just test` вызывает его перед
+`just infra-up` остаётся алиасом `db-up`, а `just test` вызывает `db-up` перед
 интеграционными тестами.

@@ -6,6 +6,8 @@ if TYPE_CHECKING:
     from decimal import Decimal
     from uuid import UUID
 
+    from payment_processor.application.events import PaymentCreatedEvent
+
 
 @dataclass(frozen=True, slots=True)
 class PaymentResult:
@@ -25,3 +27,9 @@ class PaymentDetails:
     status: Literal["pending", "succeeded", "failed"]
     created_at: datetime
     processed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedOutboxEvent:
+    event: PaymentCreatedEvent
+    claim_token: UUID

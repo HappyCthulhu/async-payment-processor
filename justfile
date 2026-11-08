@@ -28,11 +28,11 @@ current:
 history:
     uv run alembic history --verbose
 
-# Start PostgreSQL for local development and migrations.
+# Start PostgreSQL and RabbitMQ for local development.
 db-up:
-    docker compose up -d postgres
+    docker compose up -d --wait postgres rabbitmq
 
-# Stop local PostgreSQL without deleting its data volume.
+# Stop local infrastructure without deleting data volumes.
 db-down:
     docker compose down
 
@@ -58,8 +58,7 @@ rabbit-ui:
     @echo "Credentials: ${RABBITMQ_DEFAULT_USER:-payment_broker} / (see .env for password)"
 
 # Start all infrastructure required by the current integration-test suite.
-infra-up:
-    docker compose up -d --wait postgres rabbitmq
+infra-up: db-up
 
 # Run the FastAPI application locally with reload enabled.
 api:
@@ -67,5 +66,5 @@ api:
 
 # Run the automated test suite against an isolated PostgreSQL schema.
 test:
-    just infra-up
+    just db-up
     APP_DB_ECHO=false uv run pytest

@@ -101,11 +101,26 @@ Gateway — внутренний компонент worker, а не отдель
 | `payment_id` | Внешний ключ на payment. |
 | `event_type`, `event_version` | Тип `payment.created` и версия контракта. |
 | `payload` | Неизменяемый JSON-снимок входных данных платежа. |
-| `status` | `pending` или `published`. |
+| `status` | `pending`, `processing` или `published`. |
 | `publish_attempts`, `published_at`, `created_at` | Состояние relay. |
+| `claim_token`, `lease_expires_at` | Владение текущим захватом relay и срок этого захвата; заполнены только в `processing`. |
+| `last_error` | Санитизированная причина последней известной ошибки публикации. |
 
 Outbox имеет уникальность по `(payment_id, event_type)`, поэтому у одного
 платежа появляется одно событие создания.
+
+Состояния outbox образуют короткую state machine:
+
+```text
+pending -- claim --> processing -- broker confirm --> published
+                         |
+                         +-- known publish failure --> pending
+```
+
+`processing` означает, что relay уже сохранил захват события и выполняет
+публикацию. Это не сам PostgreSQL row lock: lock нужен только внутри короткой
+claim-транзакции. Незавершённый `processing` будет восстановлен после истечения
+lease захвата.
 
 ## Событие
 
@@ -176,8 +191,9 @@ retry-очередь. Это не исключает дубль при паде�
 
 API записывает payment и outbox event одной транзакцией, после чего возвращает
 `202`. Фоновый relay в API читает небольшие пачки `pending` записей с
-`FOR UPDATE SKIP LOCKED`, публикует persistent-сообщения в RabbitMQ и отмечает
-строку `published` только после publisher confirm и проверки маршрутизации.
+`FOR UPDATE SKIP LOCKED`, сохраняет для них `processing`, публикует
+persistent-сообщения в RabbitMQ и отмечает строку `published` только после
+publisher confirm и проверки маршрутизации.
 
 Падение после публикации, но до отметки `published`, приводит к повторной
 публикации. Это ожидаемая at-least-once гарантия. Relay не удаляет `pending`
@@ -187,9 +203,10 @@ API записывает payment и outbox event одной транзакцие
 При graceful shutdown relay сначала прекращает захватывать новые строки и
 завершает уже начатую публикацию в пределах ограниченного времени. Он ставит
 `published` только после broker confirm. Если срок вышел или процесс отменён,
-неподтверждённая строка остаётся `pending`: после рестарта relay заберёт её
-снова. Брокер мог успеть принять такое сообщение до отмены, поэтому дубль
-допустим и должен быть безопасно обработан worker.
+неподтверждённая строка остаётся `processing` до истечения lease, после чего
+следующий relay сможет забрать её снова. Брокер мог успеть принять такое
+сообщение до отмены, поэтому дубль допустим и должен быть безопасно обработан
+worker.
 
 ## Проверяемые сценарии
 

@@ -12,9 +12,9 @@
 | Область | Ответственность |
 | --- | --- |
 | `domain/` | Enum'ы, value-типы и чистые правила переходов payment. Не содержит отдельной ORM-дублирующей сущности `Payment`. |
-| `application/` | Use case'ы и `Protocol`-порты для хранилища, gateway, webhook и publisher. |
+| `application/` | Use case'ы, интеграционные event DTO и `Protocol`-порты для хранилища, gateway, webhook и publisher. |
 | `infrastructure/db/` | SQLAlchemy-модели, session factory, Alembic и конкретные repository. |
-| `infrastructure/messaging/` | FastStream broker, exchange, queue и event-модели. |
+| `infrastructure/messaging/` | FastStream broker, exchange, queue и publisher-адаптер. |
 | `infrastructure/integrations/` | Gateway emulator и HTTP-клиент webhook. |
 | `api/` | FastAPI app, routers, Pydantic-схемы, API key dependency и запуск relay в lifespan. |
 | `worker/` | FastStream consumer и wiring use case'ов worker. |
@@ -41,7 +41,7 @@ Use case'ы: `create_payment`, `get_payment`, `relay_outbox` и
 ```text
 PaymentStatus = pending | succeeded | failed
 Currency = RUB | USD | EUR
-OutboxStatus = pending | published
+OutboxStatus = pending | processing | published
 GatewayOutcome = succeeded | failed | temporary_error
 ```
 
@@ -99,14 +99,27 @@ Relay получает и меняет состояние outbox только ч
 переходами:
 
 ```text
-claim_pending_outbox(limit) -> list[OutboxEvent]
-mark_outbox_published(event_id, published_at)
-record_outbox_publish_failure(event_id, error)
+claim_pending_outbox(limit) -> list[ClaimedOutboxEvent]
+mark_outbox_published(event_id, claim_token, published_at)
+record_outbox_publish_failure(event_id, claim_token, error)
 ```
 
-При shutdown relay прекращает новый `claim`; запись остаётся `pending`, пока
-Relay не получит publisher confirm и не вызовет `mark_outbox_published`. Это
-сознательно допускает повторную публикацию после рестарта.
+`claim_pending_outbox` захватывает строки короткой транзакцией с `FOR UPDATE
+SKIP LOCKED` и переводит их из `pending` в `processing`. SQL-lock существует
+только до коммита claim-транзакции; `processing` — устойчиво сохранённое
+состояние, а не название самого SQL-lock.
+
+Только relay, владеющий захваченным событием, может перевести его из
+`processing` в `published` после publisher confirm. Известная ошибка публикации
+возвращает событие из `processing` в `pending`. При shutdown relay прекращает
+новый claim; незавершённое событие остаётся `processing` до восстановления его
+lease следующим relay. Это сознательно допускает повторную публикацию после
+рестарта.
+
+Захват идентифицируется `claim_token`, а не только `event_id`. Relay передаёт
+token вместе с каждой операцией финализации: запоздавший владелец не может
+пометить опубликованной или вернуть в `pending` запись, которую уже повторно
+захватил другой relay.
 
 Worker читает payment state перед внешними действиями и записывает только
 допустимые изменения:
