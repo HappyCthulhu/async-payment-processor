@@ -158,3 +158,30 @@ async def test_record_gateway_outcome_does_not_overwrite_a_final_payment(
     assert payment is not None
     assert payment.status == "failed"
     assert payment.processed_at == first_processed_at
+
+
+@pytest.mark.integration
+async def test_get_handling_state_returns_internal_delivery_state(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    command = CreatePaymentCommand(
+        amount=Decimal("1250.00"),
+        currency="RUB",
+        description="Payment for order #42",
+        metadata={"order_id": "42"},
+        webhook_url="http://webhook-sink:8080/callbacks/payments",
+        idempotency_key="handling-state-key",
+    )
+
+    async with db_session_factory() as session:
+        repository = SqlAlchemyPaymentRepository(session)
+        created_payment = await repository.create_or_get_with_outbox(command)
+        state = await repository.get_handling_state(created_payment.payment_id)
+
+    assert state is not None
+    assert state.payment_id == created_payment.payment_id
+    assert state.status == "pending"
+    assert state.processed_at is None
+    assert state.webhook_attempts == 0
+    assert state.webhook_delivered_at is None
+    assert state.webhook_delivery_exhausted_at is None

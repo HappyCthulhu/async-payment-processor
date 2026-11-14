@@ -7,7 +7,12 @@ from sqlalchemy import and_, or_, select, update
 from payment_processor.application.errors import IdempotencyConflictError
 from payment_processor.application.events import PaymentCreatedEvent
 from payment_processor.application.ports import OutboxRepository, PaymentRepository
-from payment_processor.application.results import ClaimedOutboxEvent, PaymentDetails, PaymentResult
+from payment_processor.application.results import (
+    ClaimedOutboxEvent,
+    PaymentDetails,
+    PaymentHandlingState,
+    PaymentResult,
+)
 from payment_processor.infrastructure.db.models import (
     OutboxEvent,
     OutboxEventType,
@@ -136,6 +141,23 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
                 return False
 
         return True
+
+    @override
+    async def get_handling_state(self, payment_id: UUID) -> PaymentHandlingState | None:
+        statement = select(Payment).where(Payment.id == payment_id)
+        async with self._session.begin():
+            result = await self._session.scalar(statement)
+
+        if result is None:
+            return None
+        return PaymentHandlingState(
+            payment_id=result.id,
+            status=result.status.value,
+            webhook_attempts=result.webhook_attempts,
+            webhook_delivered_at=result.webhook_delivered_at,
+            webhook_delivery_exhausted_at=result.webhook_delivery_exhausted_at,
+            processed_at=result.processed_at,
+        )
 
 
 class SqlAlchemyOutboxRepository(OutboxRepository):

@@ -8,7 +8,12 @@ if TYPE_CHECKING:
     from payment_processor.application.events import PaymentCreatedEvent
     from payment_processor.application.gateway import GatewayOutcome
     from payment_processor.application.payment_types import FinalPaymentStatus
-    from payment_processor.application.results import ClaimedOutboxEvent, PaymentDetails, PaymentResult
+    from payment_processor.application.results import (
+        ClaimedOutboxEvent,
+        PaymentDetails,
+        PaymentHandlingState,
+        PaymentResult,
+    )
 
 
 class PaymentRepository(Protocol):
@@ -22,6 +27,8 @@ class PaymentRepository(Protocol):
         status: FinalPaymentStatus,
         processed_at: datetime,
     ) -> bool: ...
+
+    async def get_handling_state(self, payment_id: UUID) -> PaymentHandlingState | None: ...
 
 
 class OutboxRepository(Protocol):
