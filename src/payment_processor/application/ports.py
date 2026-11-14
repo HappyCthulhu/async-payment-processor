@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from payment_processor.application.commands import CreatePaymentCommand
     from payment_processor.application.events import PaymentCreatedEvent
     from payment_processor.application.gateway import GatewayOutcome
+    from payment_processor.application.payment_types import FinalPaymentStatus
     from payment_processor.application.results import ClaimedOutboxEvent, PaymentDetails, PaymentResult
 
 
@@ -14,6 +15,13 @@ class PaymentRepository(Protocol):
     async def create_or_get_with_outbox(self, command: CreatePaymentCommand) -> PaymentResult: ...
 
     async def get_by_id(self, payment_id: UUID) -> PaymentDetails | None: ...
+
+    async def record_gateway_outcome(
+        self,
+        payment_id: UUID,
+        status: FinalPaymentStatus,
+        processed_at: datetime,
+    ) -> bool: ...
 
 
 class OutboxRepository(Protocol):

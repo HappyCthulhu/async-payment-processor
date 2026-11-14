@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, or_, select, update
@@ -14,12 +14,14 @@ from payment_processor.infrastructure.db.models import (
     OutboxStatus,
     Payment,
     PaymentCurrency,
+    PaymentStatus,
 )
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from payment_processor.application.commands import CreatePaymentCommand
+    from payment_processor.application.payment_types import FinalPaymentStatus
 
 CLAIM_LEASE_DURATION = timedelta(seconds=30)
 
@@ -28,6 +30,7 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @override
     async def create_or_get_with_outbox(self, command: CreatePaymentCommand) -> PaymentResult:
 
         statement = select(Payment).filter_by(idempotency_key=command.idempotency_key)
@@ -90,6 +93,7 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             created_at=payment_obj.created_at,
         )
 
+    @override
     async def get_by_id(self, payment_id: UUID) -> PaymentDetails | None:
         async with self._session.begin():
             statement = select(Payment).filter_by(id=payment_id)
@@ -109,11 +113,36 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
                 )
             return result
 
+    @override
+    async def record_gateway_outcome(
+        self,
+        payment_id: UUID,
+        status: FinalPaymentStatus,
+        processed_at: datetime,
+    ) -> bool:
+        async with self._session.begin():
+            statement = (
+                update(Payment)
+                .where(
+                    Payment.id == payment_id,
+                    Payment.status == PaymentStatus.PENDING,
+                )
+                .values(status=PaymentStatus(status), processed_at=processed_at)
+                .returning(Payment.id)
+            )
+
+            result = await self._session.execute(statement)
+            if len(result.scalars().all()) == 0:
+                return False
+
+        return True
+
 
 class SqlAlchemyOutboxRepository(OutboxRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @override
     async def claim_pending_events(self, limit: int) -> list[ClaimedOutboxEvent]:
 
         claimed_events: list[ClaimedOutboxEvent] = []
@@ -149,6 +178,7 @@ class SqlAlchemyOutboxRepository(OutboxRepository):
 
         return claimed_events
 
+    @override
     async def mark_as_published(self, event_id: UUID, claim_token: UUID, published_at: datetime) -> None:
         statement = (
             update(OutboxEvent)
@@ -169,6 +199,7 @@ class SqlAlchemyOutboxRepository(OutboxRepository):
         async with self._session.begin():
             await self._session.execute(statement)
 
+    @override
     async def record_publish_failure(self, event_id: UUID, claim_token: UUID, error: str) -> None:
         statement = (
             update(OutboxEvent)

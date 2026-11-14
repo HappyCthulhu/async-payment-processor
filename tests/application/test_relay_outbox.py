@@ -1,55 +1,63 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import override
 from uuid import UUID, uuid4
 
 import pytest
 
 from payment_processor.application.errors import EventPublishError
 from payment_processor.application.events import PaymentCreatedEvent, PaymentSnapshot
+from payment_processor.application.ports import EventPublisher, OutboxRepository
 from payment_processor.application.results import ClaimedOutboxEvent
 from payment_processor.application.use_cases.relay_outbox import RelayOutboxUseCase
 
 
-class FakeOutboxRepository:
+class FakeOutboxRepository(OutboxRepository):
     def __init__(self, events: list[ClaimedOutboxEvent]) -> None:
         self._events = events
         self.claim_limits: list[int] = []
         self.published: list[tuple[UUID, UUID, datetime]] = []
         self.failures: list[tuple[UUID, UUID, str]] = []
 
+    @override
     async def claim_pending_events(self, limit: int) -> list[ClaimedOutboxEvent]:
         self.claim_limits.append(limit)
         return self._events[:limit]
 
+    @override
     async def mark_as_published(self, event_id: UUID, claim_token: UUID, published_at: datetime) -> None:
         self.published.append((event_id, claim_token, published_at))
 
+    @override
     async def record_publish_failure(self, event_id: UUID, claim_token: UUID, error: str) -> None:
         self.failures.append((event_id, claim_token, error))
 
 
-class RecordingEventPublisher:
+class RecordingEventPublisher(EventPublisher):
     def __init__(self) -> None:
         self.published_events: list[PaymentCreatedEvent] = []
 
+    @override
     async def publish(self, event: PaymentCreatedEvent) -> None:
         self.published_events.append(event)
 
 
-class UnavailableEventPublisher:
+class UnavailableEventPublisher(EventPublisher):
     def __init__(self) -> None:
         self.attempted_events: list[PaymentCreatedEvent] = []
 
+    @override
     async def publish(self, event: PaymentCreatedEvent) -> None:
         self.attempted_events.append(event)
         message = "RabbitMQ is unavailable"
         raise EventPublishError(message)
 
 
-class BrokenEventPublisher:
+class BrokenEventPublisher(EventPublisher):
     def __init__(self) -> None:
         self.attempted_events: list[PaymentCreatedEvent] = []
 
+    @override
     async def publish(self, event: PaymentCreatedEvent) -> None:
         self.attempted_events.append(event)
         message = "Unexpected programming error"

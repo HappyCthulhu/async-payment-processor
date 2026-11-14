@@ -1,13 +1,14 @@
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from payment_processor.application.gateway import GatewayOutcome
+from payment_processor.application.ports import PaymentGateway
 
 if TYPE_CHECKING:
     from uuid import UUID
 
 
-class GatewayEmulator:
+class GatewayEmulator(PaymentGateway):
     def __init__(self, min_delay_seconds: float = 2, max_delay_seconds: float = 5) -> None:
         if min_delay_seconds < 0 or max_delay_seconds < min_delay_seconds:
             msg = "Gateway delay range must be non-negative and ordered"
@@ -16,6 +17,7 @@ class GatewayEmulator:
         self._min_delay_seconds = min_delay_seconds
         self._max_delay_seconds = max_delay_seconds
 
+    @override
     async def process(self, payment_id: UUID) -> GatewayOutcome:
         await asyncio.sleep(self._delay_for(payment_id))
 

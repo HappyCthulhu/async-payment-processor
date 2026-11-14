@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -86,3 +87,74 @@ async def test_replay_with_changed_payload_raises_conflict_and_preserves_existin
     assert len(payments) == 1
     assert payments[0].amount == Decimal("1250.00")
     assert len(events) == 1
+
+
+@pytest.mark.integration
+async def test_record_gateway_outcome_finalizes_pending_payment(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    command = CreatePaymentCommand(
+        amount=Decimal("1250.00"),
+        currency="RUB",
+        description="Payment for order #42",
+        metadata={"order_id": "42"},
+        webhook_url="http://webhook-sink:8080/callbacks/payments",
+        idempotency_key="gateway-outcome-key",
+    )
+    processed_at = datetime.now(tz=UTC)
+
+    async with db_session_factory() as session:
+        repository = SqlAlchemyPaymentRepository(session)
+        created_payment = await repository.create_or_get_with_outbox(command)
+        was_recorded = await repository.record_gateway_outcome(
+            payment_id=created_payment.payment_id,
+            status="succeeded",
+            processed_at=processed_at,
+        )
+
+    async with db_session_factory() as session:
+        payment = await SqlAlchemyPaymentRepository(session).get_by_id(created_payment.payment_id)
+
+    assert was_recorded is True
+    assert payment is not None
+    assert payment.status == "succeeded"
+    assert payment.processed_at == processed_at
+
+
+@pytest.mark.integration
+async def test_record_gateway_outcome_does_not_overwrite_a_final_payment(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    command = CreatePaymentCommand(
+        amount=Decimal("1250.00"),
+        currency="RUB",
+        description="Payment for order #42",
+        metadata={"order_id": "42"},
+        webhook_url="http://webhook-sink:8080/callbacks/payments",
+        idempotency_key="final-gateway-outcome-key",
+    )
+    first_processed_at = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+    second_processed_at = datetime(2026, 11, 14, 12, 1, tzinfo=UTC)
+
+    async with db_session_factory() as session:
+        repository = SqlAlchemyPaymentRepository(session)
+        created_payment = await repository.create_or_get_with_outbox(command)
+        first_write = await repository.record_gateway_outcome(
+            payment_id=created_payment.payment_id,
+            status="failed",
+            processed_at=first_processed_at,
+        )
+        second_write = await repository.record_gateway_outcome(
+            payment_id=created_payment.payment_id,
+            status="succeeded",
+            processed_at=second_processed_at,
+        )
+
+    async with db_session_factory() as session:
+        payment = await SqlAlchemyPaymentRepository(session).get_by_id(created_payment.payment_id)
+
+    assert first_write is True
+    assert second_write is False
+    assert payment is not None
+    assert payment.status == "failed"
+    assert payment.processed_at == first_processed_at
