@@ -6,6 +6,7 @@ if TYPE_CHECKING:
 
     from payment_processor.application.commands import CreatePaymentCommand
     from payment_processor.application.events import PaymentCreatedEvent
+    from payment_processor.application.gateway import GatewayOutcome
     from payment_processor.application.results import ClaimedOutboxEvent, PaymentDetails, PaymentResult
 
 
@@ -25,3 +26,7 @@ class OutboxRepository(Protocol):
 
 class EventPublisher(Protocol):
     async def publish(self, event: PaymentCreatedEvent) -> None: ...
+
+
+class PaymentGateway(Protocol):
+    async def process(self, payment_id: UUID) -> GatewayOutcome: ...
