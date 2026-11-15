@@ -45,3 +45,11 @@ class EventPublisher(Protocol):
 
 class PaymentGateway(Protocol):
     async def process(self, payment_id: UUID) -> GatewayOutcome: ...
+
+
+class PaymentEventHandler(Protocol):
+    async def execute(self, event: PaymentCreatedEvent) -> None: ...
+
+
+class RetryPublisher(Protocol):
+    async def publish(self, event: PaymentCreatedEvent, retry_attempt: int) -> None: ...

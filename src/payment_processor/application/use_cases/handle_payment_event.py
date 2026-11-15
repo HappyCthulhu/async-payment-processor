@@ -1,19 +1,21 @@
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from payment_processor.application.errors import GatewayTemporaryError
 from payment_processor.application.gateway import GatewayOutcome
+from payment_processor.application.ports import PaymentEventHandler
 
 if TYPE_CHECKING:
     from payment_processor.application.events import PaymentCreatedEvent
     from payment_processor.application.ports import PaymentGateway, PaymentRepository
 
 
-class HandlePaymentEventUseCase:
+class HandlePaymentEventUseCase(PaymentEventHandler):
     def __init__(self, repository: PaymentRepository, gateway: PaymentGateway) -> None:
         self._payment_repo = repository
         self._gateway_repo = gateway
 
+    @override
     async def execute(self, event: PaymentCreatedEvent) -> None:
         result = await self._payment_repo.get_handling_state(event.payment_id)
         if result is None:
