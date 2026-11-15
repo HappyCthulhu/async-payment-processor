@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from payment_processor.application.errors import GatewayTemporaryError
+from payment_processor.application.errors import GatewayTemporaryError, WebhookDeliveryError
 from payment_processor.application.events import PaymentCreatedEvent, PaymentSnapshot
 from payment_processor.application.ports import PaymentEventHandler, RetryPublisher
 from payment_processor.worker.consumer import PaymentEventConsumer
@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 class RecordingHandlePaymentEventUseCase(PaymentEventHandler):
     def __init__(self, error: Exception | None = None) -> None:
         self._error = error
-        self.events: list[PaymentCreatedEvent] = []
+        self.calls: list[tuple[PaymentCreatedEvent, int]] = []
 
     @override
-    async def execute(self, event: PaymentCreatedEvent) -> None:
-        self.events.append(event)
+    async def execute(self, event: PaymentCreatedEvent, attempt: int) -> None:
+        self.calls.append((event, attempt))
         if self._error is not None:
             raise self._error
 
@@ -77,7 +77,7 @@ async def test_consumer_acknowledges_a_successfully_handled_event() -> None:
 
     await consumer.consume(event=event, message=cast("RabbitMessage", message))
 
-    assert use_case.events == [event]
+    assert use_case.calls == [(event, 1)]
     assert retry_publisher.published_events == []
     assert message.acknowledged is True
     assert message.rejected_with == []
@@ -99,7 +99,8 @@ async def test_consumer_publishes_temporary_failures_to_the_next_retry_queue(
 
     await consumer.consume(event=event, message=cast("RabbitMessage", message))
 
-    assert use_case.events == [event]
+    expected_attempt = 1 if current_attempt is None else int(current_attempt)
+    assert use_case.calls == [(event, expected_attempt)]
     assert retry_publisher.published_events == [(event, retry_attempt)]
     assert message.acknowledged is True
     assert message.rejected_with == []
@@ -115,7 +116,7 @@ async def test_consumer_rejects_an_exhausted_temporary_failure_for_dead_letterin
 
     await consumer.consume(event=event, message=cast("RabbitMessage", message))
 
-    assert use_case.events == [event]
+    assert use_case.calls == [(event, attempt)]
     assert retry_publisher.published_events == []
     assert message.acknowledged is False
     assert message.rejected_with == [False]
@@ -133,4 +134,19 @@ async def test_consumer_keeps_original_message_unacknowledged_when_retry_publish
 
     assert retry_publisher.published_events == []
     assert message.acknowledged is False
+    assert message.rejected_with == []
+
+
+async def test_consumer_retries_a_webhook_delivery_error() -> None:
+    use_case = RecordingHandlePaymentEventUseCase(WebhookDeliveryError("Webhook request failed"))
+    retry_publisher = RecordingRetryPublisher()
+    message = RecordingMessage(attempt=1)
+    event = payment_created_event()
+    consumer = PaymentEventConsumer(use_case=use_case, retry_publisher=retry_publisher)
+
+    await consumer.consume(event=event, message=cast("RabbitMessage", message))
+
+    assert use_case.calls == [(event, 1)]
+    assert retry_publisher.published_events == [(event, 2)]
+    assert message.acknowledged is True
     assert message.rejected_with == []

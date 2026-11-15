@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from payment_processor.application.errors import GatewayTemporaryError
+from payment_processor.application.errors import GatewayTemporaryError, WebhookDeliveryError
 
 if TYPE_CHECKING:
     from faststream.rabbit import RabbitMessage
@@ -15,13 +15,13 @@ class PaymentEventConsumer:
         self._publisher = retry_publisher
 
     async def consume(self, event: PaymentCreatedEvent, message: RabbitMessage) -> None:
-        try:
-            await self._use_case.execute(event)
-            await message.ack()
-        except GatewayTemporaryError:
-            header_attempt = message.headers.get("x-payment-attempt")
-            attempt = int(header_attempt) if header_attempt is not None else 1
+        header_attempt = message.headers.get("x-payment-attempt")
+        attempt = int(header_attempt) if header_attempt is not None else 1
 
+        try:
+            await self._use_case.execute(event, attempt)
+            await message.ack()
+        except GatewayTemporaryError, WebhookDeliveryError:
             match attempt:
                 case 1:
                     await self._publisher.publish(event, 2)

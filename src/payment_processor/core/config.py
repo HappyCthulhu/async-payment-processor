@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     relay_batch_size: int = 10
     relay_poll_interval_seconds: float = 1.0
     relay_shutdown_timeout_seconds: float = 10.0
+    webhook_timeout_seconds: float = 10.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

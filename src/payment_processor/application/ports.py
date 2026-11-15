@@ -54,7 +54,7 @@ class PaymentGateway(Protocol):
 
 
 class PaymentEventHandler(Protocol):
-    async def execute(self, event: PaymentCreatedEvent) -> None: ...
+    async def execute(self, event: PaymentCreatedEvent, attempt: int) -> None: ...
 
 
 class RetryPublisher(Protocol):

@@ -18,9 +18,12 @@ from payment_processor.infrastructure.db.repositories import SqlAlchemyPaymentRe
 from payment_processor.infrastructure.integrations.gateway_emulator import GatewayEmulator
 from payment_processor.infrastructure.messaging.broker import broker
 from payment_processor.infrastructure.messaging.topology import (
+    PAYMENTS_DLQ_QUEUE_NAME,
     PAYMENTS_EXCHANGE,
     PAYMENTS_NEW_QUEUE,
     PAYMENTS_NEW_QUEUE_NAME,
+    PAYMENTS_RETRY_1_QUEUE_NAME,
+    PAYMENTS_RETRY_2_QUEUE_NAME,
     declare_topology,
 )
 
@@ -28,13 +31,21 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
-async def clear_main_queue() -> None:
+PAYMENT_QUEUE_NAMES = (
+    PAYMENTS_NEW_QUEUE_NAME,
+    PAYMENTS_RETRY_1_QUEUE_NAME,
+    PAYMENTS_RETRY_2_QUEUE_NAME,
+    PAYMENTS_DLQ_QUEUE_NAME,
+)
+
+
+async def clear_queue(queue_name: str) -> None:
     connection = urlsplit(settings.rabbitmq_url)
     assert connection.username is not None
     assert connection.password is not None
 
     vhost = quote("/", safe="")
-    url = f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{PAYMENTS_NEW_QUEUE_NAME}/contents"
+    url = f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{queue_name}/contents"
     async with httpx.AsyncClient(trust_env=False) as client:
         response = await client.delete(
             url,
@@ -42,6 +53,11 @@ async def clear_main_queue() -> None:
         )
 
     assert response.status_code == httpx.codes.NO_CONTENT
+
+
+async def clear_payment_queues() -> None:
+    for queue_name in PAYMENT_QUEUE_NAMES:
+        await clear_queue(queue_name)
 
 
 async def main_queue_message_count() -> int:
@@ -65,7 +81,14 @@ def immediate_gateway() -> GatewayEmulator:
     return GatewayEmulator(min_delay_seconds=0, max_delay_seconds=0)
 
 
-async def wait_for_final_payment_status(
+def successful_webhook_http_client() -> httpx.AsyncClient:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=httpx.codes.NO_CONTENT)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
+
+
+async def wait_for_completed_payment(
     session_factory: async_sessionmaker[AsyncSession],
     payment_id: UUID,
 ) -> Payment:
@@ -76,12 +99,12 @@ async def wait_for_final_payment_status(
             payment = await session.get(Payment, payment_id)
 
         assert payment is not None
-        if payment.status is not PaymentStatus.PENDING:
+        if payment.status is not PaymentStatus.PENDING and payment.webhook_delivered_at is not None:
             return payment
 
         await asyncio.sleep(0.05)
 
-    pytest.fail("Worker did not persist a final payment status within five seconds")
+    pytest.fail("Worker did not persist a completed payment within five seconds")
 
 
 async def create_payment_event(
@@ -111,10 +134,11 @@ async def test_worker_consumes_event_and_persists_gateway_outcome(
 ) -> None:
     monkeypatch.setattr(worker_app, "session_factory", db_session_factory)
     monkeypatch.setattr(worker_app, "GatewayEmulator", immediate_gateway)
+    monkeypatch.setattr(worker_app, "create_webhook_http_client", successful_webhook_http_client)
 
     async with broker:
         await declare_topology(broker)
-    await clear_main_queue()
+    await clear_payment_queues()
 
     payment_id, event = await create_payment_event(db_session_factory)
     expected_status = PaymentStatus.FAILED if payment_id.int % 10 == 0 else PaymentStatus.SUCCEEDED
@@ -126,9 +150,10 @@ async def test_worker_consumes_event_and_persists_gateway_outcome(
             exchange=PAYMENTS_EXCHANGE,
             persist=True,
         )
-        payment = await wait_for_final_payment_status(db_session_factory, payment_id)
+        payment = await wait_for_completed_payment(db_session_factory, payment_id)
 
     assert payment.status is expected_status
     assert payment.processed_at is not None
+    assert payment.webhook_delivered_at is not None
     assert payment.processed_at <= datetime.now(tz=UTC)
     assert await main_queue_message_count() == 0

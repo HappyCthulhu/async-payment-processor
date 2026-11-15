@@ -5,10 +5,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from payment_processor.application.errors import GatewayTemporaryError
-from payment_processor.application.events import PaymentCreatedEvent, PaymentSnapshot
+from payment_processor.application.errors import GatewayTemporaryError, WebhookDeliveryError
+from payment_processor.application.events import PaymentCreatedEvent, PaymentSnapshot, WebhookNotification
 from payment_processor.application.gateway import GatewayOutcome
-from payment_processor.application.ports import PaymentGateway, PaymentRepository
+from payment_processor.application.ports import PaymentGateway, PaymentRepository, WebhookClient
 from payment_processor.application.results import PaymentHandlingState
 from payment_processor.application.use_cases.handle_payment_event import HandlePaymentEventUseCase
 
@@ -22,6 +22,8 @@ class StubPaymentRepository(PaymentRepository):
     def __init__(self, state: PaymentHandlingState | None) -> None:
         self._state = state
         self.recorded_outcomes: list[tuple[UUID, FinalPaymentStatus, datetime]] = []
+        self.recorded_deliveries: list[tuple[UUID, int, datetime]] = []
+        self.recorded_failures: list[tuple[UUID, int, str, datetime | None]] = []
 
     @override
     async def create_or_get_with_outbox(self, command: CreatePaymentCommand) -> PaymentResult:
@@ -47,7 +49,7 @@ class StubPaymentRepository(PaymentRepository):
 
     @override
     async def record_webhook_delivery(self, payment_id: UUID, attempt: int, delivered_at: datetime) -> None:
-        raise AssertionError(f"Unexpected webhook delivery for payment {payment_id}, attempt {attempt}")
+        self.recorded_deliveries.append((payment_id, attempt, delivered_at))
 
     @override
     async def record_webhook_failure(
@@ -57,9 +59,7 @@ class StubPaymentRepository(PaymentRepository):
         error: str,
         exhausted_at: datetime | None,
     ) -> None:
-        raise AssertionError(
-            f"Unexpected webhook failure for payment {payment_id}, attempt {attempt}: {error}",
-        )
+        self.recorded_failures.append((payment_id, attempt, error, exhausted_at))
 
 
 class RecordingGateway(PaymentGateway):
@@ -71,6 +71,18 @@ class RecordingGateway(PaymentGateway):
     async def process(self, payment_id: UUID) -> GatewayOutcome:
         self.processed_payment_ids.append(payment_id)
         return self._outcome
+
+
+class RecordingWebhookClient(WebhookClient):
+    def __init__(self, error: WebhookDeliveryError | None = None) -> None:
+        self._error = error
+        self.deliveries: list[tuple[str, WebhookNotification]] = []
+
+    @override
+    async def deliver(self, webhook_url: str, notification: WebhookNotification) -> None:
+        self.deliveries.append((webhook_url, notification))
+        if self._error is not None:
+            raise self._error
 
 
 def payment_created_event() -> PaymentCreatedEvent:
@@ -90,24 +102,35 @@ def payment_created_event() -> PaymentCreatedEvent:
     )
 
 
-def handling_state(payment_id: UUID, status: PaymentStatus) -> PaymentHandlingState:
+def handling_state(
+    payment_id: UUID,
+    status: PaymentStatus,
+    *,
+    processed_at: datetime | None = None,
+    webhook_delivered_at: datetime | None = None,
+) -> PaymentHandlingState:
     return PaymentHandlingState(
         payment_id=payment_id,
         status=status,
-        processed_at=None,
+        processed_at=processed_at,
         webhook_attempts=0,
-        webhook_delivered_at=None,
+        webhook_delivered_at=webhook_delivered_at,
         webhook_delivery_exhausted_at=None,
     )
 
 
-async def test_handle_event_records_a_successful_gateway_outcome_for_pending_payment() -> None:
+async def test_handle_event_finalizes_pending_payment_and_delivers_webhook() -> None:
     event = payment_created_event()
     repository = StubPaymentRepository(handling_state(event.payment_id, status="pending"))
     gateway = RecordingGateway(GatewayOutcome.SUCCEEDED)
-    use_case = HandlePaymentEventUseCase(repository=repository, gateway=gateway)
+    webhook_client = RecordingWebhookClient()
+    use_case = HandlePaymentEventUseCase(
+        repository=repository,
+        gateway=gateway,
+        webhook_client=webhook_client,
+    )
 
-    await use_case.execute(event)
+    await use_case.execute(event, attempt=1)
 
     assert gateway.processed_payment_ids == [event.payment_id]
     assert len(repository.recorded_outcomes) == 1
@@ -115,28 +138,120 @@ async def test_handle_event_records_a_successful_gateway_outcome_for_pending_pay
     assert payment_id == event.payment_id
     assert status == "succeeded"
     assert processed_at.tzinfo is not None
+    assert webhook_client.deliveries == [
+        (
+            "http://webhook-sink:8080/callbacks/payments",
+            WebhookNotification(
+                event_id=event.event_id,
+                payment_id=event.payment_id,
+                status="succeeded",
+                amount=Decimal("1250.00"),
+                currency="RUB",
+                metadata={"order_id": "42"},
+                processed_at=processed_at,
+            ),
+        ),
+    ]
+    assert len(repository.recorded_deliveries) == 1
+    delivered_payment_id, attempt, delivered_at = repository.recorded_deliveries[0]
+    assert delivered_payment_id == event.payment_id
+    assert attempt == 1
+    assert delivered_at.tzinfo is not None
 
 
-async def test_handle_event_does_not_call_gateway_for_a_final_payment() -> None:
+async def test_handle_event_delivers_webhook_for_final_payment_without_calling_gateway() -> None:
     event = payment_created_event()
-    repository = StubPaymentRepository(handling_state(event.payment_id, status="failed"))
+    processed_at = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+    attempt = 2
+    repository = StubPaymentRepository(
+        handling_state(event.payment_id, status="failed", processed_at=processed_at),
+    )
     gateway = RecordingGateway(GatewayOutcome.SUCCEEDED)
-    use_case = HandlePaymentEventUseCase(repository=repository, gateway=gateway)
+    webhook_client = RecordingWebhookClient()
+    use_case = HandlePaymentEventUseCase(
+        repository=repository,
+        gateway=gateway,
+        webhook_client=webhook_client,
+    )
 
-    await use_case.execute(event)
+    await use_case.execute(event, attempt=attempt)
 
     assert gateway.processed_payment_ids == []
     assert repository.recorded_outcomes == []
+    assert webhook_client.deliveries[0][1].status == "failed"
+    assert webhook_client.deliveries[0][1].processed_at == processed_at
+    assert repository.recorded_deliveries[0][1] == attempt
+
+
+async def test_handle_event_skips_an_already_delivered_webhook() -> None:
+    event = payment_created_event()
+    processed_at = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+    repository = StubPaymentRepository(
+        handling_state(
+            event.payment_id,
+            status="succeeded",
+            processed_at=processed_at,
+            webhook_delivered_at=processed_at,
+        ),
+    )
+    gateway = RecordingGateway(GatewayOutcome.SUCCEEDED)
+    webhook_client = RecordingWebhookClient()
+    use_case = HandlePaymentEventUseCase(
+        repository=repository,
+        gateway=gateway,
+        webhook_client=webhook_client,
+    )
+
+    await use_case.execute(event, attempt=1)
+
+    assert gateway.processed_payment_ids == []
+    assert webhook_client.deliveries == []
+    assert repository.recorded_outcomes == []
+    assert repository.recorded_deliveries == []
+
+
+async def test_handle_event_records_webhook_failure_and_reraises_error() -> None:
+    event = payment_created_event()
+    processed_at = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+    final_attempt = 3
+    repository = StubPaymentRepository(
+        handling_state(event.payment_id, status="succeeded", processed_at=processed_at),
+    )
+    gateway = RecordingGateway(GatewayOutcome.SUCCEEDED)
+    webhook_client = RecordingWebhookClient(WebhookDeliveryError("Webhook request failed"))
+    use_case = HandlePaymentEventUseCase(
+        repository=repository,
+        gateway=gateway,
+        webhook_client=webhook_client,
+    )
+
+    with pytest.raises(WebhookDeliveryError, match="Webhook request failed"):
+        await use_case.execute(event, attempt=final_attempt)
+
+    assert gateway.processed_payment_ids == []
+    assert repository.recorded_deliveries == []
+    assert len(repository.recorded_failures) == 1
+    payment_id, attempt, error, exhausted_at = repository.recorded_failures[0]
+    assert payment_id == event.payment_id
+    assert attempt == final_attempt
+    assert error == "Webhook request failed"
+    assert exhausted_at is not None
 
 
 async def test_handle_event_does_not_persist_a_temporary_gateway_error() -> None:
     event = payment_created_event()
     repository = StubPaymentRepository(handling_state(event.payment_id, status="pending"))
     gateway = RecordingGateway(GatewayOutcome.TEMPORARY_ERROR)
-    use_case = HandlePaymentEventUseCase(repository=repository, gateway=gateway)
+    webhook_client = RecordingWebhookClient()
+    use_case = HandlePaymentEventUseCase(
+        repository=repository,
+        gateway=gateway,
+        webhook_client=webhook_client,
+    )
 
     with pytest.raises(GatewayTemporaryError):
-        await use_case.execute(event)
+        await use_case.execute(event, attempt=1)
 
     assert gateway.processed_payment_ids == [event.payment_id]
     assert repository.recorded_outcomes == []
+    assert webhook_client.deliveries == []
