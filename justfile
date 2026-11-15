@@ -1,4 +1,5 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+set dotenv-load := true
 
 # Show available project commands.
 default:
@@ -81,7 +82,7 @@ worker:
     just db-up
     uv run faststream run payment_processor.worker.app:app
 
-# Run the automated test suite against an isolated PostgreSQL schema.
+# Run tests with isolated PostgreSQL schemas and a separate RabbitMQ broker.
 test:
-    just db-up
-    APP_DB_ECHO=false uv run pytest
+    docker compose up -d --wait postgres rabbitmq-test
+    APP_DB_ECHO=false APP_RABBITMQ_URL="amqp://test_broker:test_broker_password@localhost:${TEST_RABBITMQ_PORT:-5673}/" APP_RABBITMQ_MANAGEMENT_URL="http://localhost:${TEST_RABBITMQ_MANAGEMENT_PORT:-15673}" uv run pytest

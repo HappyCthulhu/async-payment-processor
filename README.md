@@ -76,7 +76,7 @@ sink и создайте новый платёж. После трёх попыт
 
 ```bash
 uv sync --locked
-just test                 # запускает PostgreSQL и RabbitMQ и выполняет pytest
+just test                 # запускает PostgreSQL и отдельный тестовый RabbitMQ, затем pytest
 uv run ruff check .
 uv run ty check
 ```
@@ -95,5 +95,12 @@ AMQP RabbitMQ доступен на порту `5672`, а Management UI — на
 `.env`; команда `just rabbit-ui` напомнит адрес и логин. `just rabbit-up`
 остаётся доступной, если нужно поднять только брокер.
 
-`just infra-up` остаётся алиасом `db-up`, а `just test` вызывает `db-up` перед
-интеграционными тестами.
+`just infra-up` остаётся алиасом `db-up`. `just test` запускает PostgreSQL и
+отдельный непостоянный `rabbitmq-test` (AMQP `5673`, Management `15673` по
+умолчанию); тесты используют изолированные схемы PostgreSQL и тестовый broker,
+поэтому не очищают очереди demo. Порты тестового broker можно изменить через
+`TEST_RABBITMQ_PORT` и `TEST_RABBITMQ_MANAGEMENT_PORT` в `.env`. После `just up`
+можно выполнить `just test` и проверить, что demo продолжает работать и его
+очереди в RabbitMQ Management не изменились из-за тестов. Тестовый сервис не
+входит в обычный запуск; удалить только его можно командой
+`docker compose rm -sf rabbitmq-test`.
