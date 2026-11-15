@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, override
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 
 from payment_processor.application.errors import IdempotencyConflictError
 from payment_processor.application.events import PaymentCreatedEvent
@@ -38,16 +39,11 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
     @override
     async def create_or_get_with_outbox(self, command: CreatePaymentCommand) -> PaymentResult:
 
-        statement = select(Payment).filter_by(idempotency_key=command.idempotency_key)
-
         async with self._session.begin():
-            scalars = await self._session.scalars(statement)
-            payment_obj = scalars.one_or_none()
-
             metadata = dict(command.metadata)
-
-            if payment_obj is None:
-                payment_obj = Payment(
+            statement = (
+                insert(Payment)
+                .values(
                     idempotency_key=command.idempotency_key,
                     amount=command.amount,
                     webhook_url=command.webhook_url,
@@ -55,9 +51,12 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
                     description=command.description,
                     payment_metadata=metadata,
                 )
-                self._session.add(payment_obj)
-                await self._session.flush()
+                .on_conflict_do_nothing(index_elements=[Payment.idempotency_key])
+                .returning(Payment)
+            )
+            payment_obj = await self._session.scalar(statement)
 
+            if payment_obj is not None:
                 event_id = uuid4()
                 outbox_event = OutboxEvent(
                     id=event_id,
@@ -80,6 +79,9 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
                 )
                 self._session.add(outbox_event)
             else:
+                payment_obj = (
+                    await self._session.scalars(select(Payment).filter_by(idempotency_key=command.idempotency_key))
+                ).one()
                 for pare in (
                     (payment_obj.amount, command.amount),
                     (payment_obj.webhook_url, command.webhook_url),

@@ -1,3 +1,4 @@
+import asyncio
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -85,6 +86,41 @@ async def test_create_payment_replay_with_changed_business_data_returns_conflict
     response = await client.post(PAYMENTS_PATH, headers=payment_headers(), json=changed_request)
 
     assert response.status_code == status.HTTP_409_CONFLICT
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("conflicting", [False, True])
+async def test_concurrent_requests_with_same_key_are_resolved_atomically(
+    client: AsyncClient,
+    db_session_factory: async_sessionmaker[AsyncSession],
+    conflicting: bool,
+) -> None:
+    second_request = {**PAYMENT_REQUEST, "amount": "1300.00"} if conflicting else PAYMENT_REQUEST
+    first, second = await asyncio.gather(
+        client.post(PAYMENTS_PATH, headers=payment_headers(), json=PAYMENT_REQUEST),
+        client.post(PAYMENTS_PATH, headers=payment_headers(), json=second_request),
+    )
+
+    if conflicting:
+        assert sorted([first.status_code, second.status_code]) == [202, 409]
+    else:
+        assert_accepted_payment(first)
+        assert first.json() == second.json()
+        assert second.status_code == status.HTTP_202_ACCEPTED
+
+    async with db_session_factory() as session:
+        payments = list((await session.scalars(select(Payment))).all())
+        events = list((await session.scalars(select(OutboxEvent))).all())
+    assert len(payments) == 1
+    assert len(events) == 1
+    assert events[0].payment_id == payments[0].id
+
+
+@pytest.mark.integration
+async def test_create_payment_rejects_idempotency_key_longer_than_database_limit(client: AsyncClient) -> None:
+    response = await client.post(PAYMENTS_PATH, headers=payment_headers("x" * 256), json=PAYMENT_REQUEST)
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 @pytest.mark.integration
