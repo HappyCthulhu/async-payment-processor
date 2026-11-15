@@ -1,10 +1,12 @@
 import asyncio
-import logging
 from asyncio import Event, create_task
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from payment_processor.core.config import settings
+from payment_processor.core.logging import configure_logging
 from payment_processor.infrastructure.db.session import session_factory
 from payment_processor.infrastructure.messaging.broker import broker
 from payment_processor.infrastructure.messaging.publisher import RabbitEventPublisher
@@ -15,8 +17,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from fastapi import FastAPI
-
-logger = logging.getLogger(__name__)
 
 
 async def run_relay(stop_event: Event) -> None:
@@ -33,7 +33,7 @@ async def run_relay(stop_event: Event) -> None:
                 )
                 await runner.run_forever(settings.relay_batch_size, stop_event=stop_event)
         except Exception as error:
-            logger.warning("Outbox broker connection failed (%s); retrying", type(error).__name__)
+            logger.warning("event=relay_connection_failed error_type={} action=retry", type(error).__name__)
 
         if not stop_event.is_set():
             with suppress(TimeoutError):
@@ -42,6 +42,8 @@ async def run_relay(stop_event: Event) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    configure_logging()
+    logger.info("event=api_started")
     stop_event = Event()
     relay_task = create_task(run_relay(stop_event))
     try:
@@ -50,3 +52,4 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         stop_event.set()
         with suppress(TimeoutError):
             await asyncio.wait_for(relay_task, settings.relay_shutdown_timeout_seconds)
+        logger.info("event=api_stopped")

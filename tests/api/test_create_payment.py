@@ -4,6 +4,7 @@ from uuid import UUID
 
 import pytest
 from fastapi import status
+from loguru import logger
 from sqlalchemy import select
 
 from payment_processor.core.config import settings
@@ -39,6 +40,27 @@ def assert_accepted_payment(response: Response) -> dict[str, object]:
     assert payload["status"] == "pending"
     assert isinstance(payload["created_at"], str)
     return payload
+
+
+@pytest.mark.integration
+async def test_create_payment_log_omits_credentials_and_payment_data(client: AsyncClient) -> None:
+    logs: list[str] = []
+    sink_id = logger.add(lambda message: logs.append(str(message)), format="{message}")
+    try:
+        response = await client.post(
+            PAYMENTS_PATH, headers=payment_headers("private-idempotency-key"), json=PAYMENT_REQUEST
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert response.status_code == status.HTTP_202_ACCEPTED
+    output = "".join(logs)
+    assert "event=payment_accepted" in output
+    assert response.json()["payment_id"] in output
+    assert settings.api_key not in output
+    assert "private-idempotency-key" not in output
+    assert "webhook-sink" not in output
+    assert "order_id" not in output
 
 
 @pytest.mark.integration

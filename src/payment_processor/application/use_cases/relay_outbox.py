@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from payment_processor.application.errors import EventPublishError
 
 if TYPE_CHECKING:
@@ -19,7 +21,9 @@ class RelayOutboxUseCase:
                 await self._publisher.publish(claimed.event)
             except EventPublishError as error:
                 await self._repository.record_publish_failure(claimed.event.event_id, claimed.claim_token, str(error))
+                logger.warning("event=outbox_publish_failed event_id={}", claimed.event.event_id)
             else:
                 await self._repository.mark_as_published(
                     claimed.event.event_id, claimed.claim_token, datetime.now(tz=UTC)
                 )
+                logger.info("event=outbox_published event_id={}", claimed.event.event_id)

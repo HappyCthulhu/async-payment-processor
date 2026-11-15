@@ -4,10 +4,12 @@ from typing import TYPE_CHECKING
 import httpx
 from faststream import AckPolicy, FastStream
 from faststream.rabbit import Channel, RabbitMessage
+from loguru import logger
 
 from payment_processor.application.events import PaymentCreatedEvent  # noqa: TC001
 from payment_processor.application.use_cases.handle_payment_event import HandlePaymentEventUseCase
 from payment_processor.core.config import settings
+from payment_processor.core.logging import configure_logging
 from payment_processor.infrastructure.db.repositories import SqlAlchemyPaymentRepository
 from payment_processor.infrastructure.db.session import session_factory
 from payment_processor.infrastructure.integrations.gateway_emulator import GatewayEmulator
@@ -37,14 +39,17 @@ def create_webhook_http_client() -> httpx.AsyncClient:
 
 
 async def startup() -> None:
+    configure_logging()
     await declare_topology(broker)
     resources.webhook_http_client = create_webhook_http_client()
+    logger.info("event=worker_started")
 
 
 async def shutdown() -> None:
     if resources.webhook_http_client is not None:
         await resources.webhook_http_client.aclose()
         resources.webhook_http_client = None
+    logger.info("event=worker_stopped")
 
 
 def build_payment_event_consumer(session: AsyncSession) -> PaymentEventConsumer:

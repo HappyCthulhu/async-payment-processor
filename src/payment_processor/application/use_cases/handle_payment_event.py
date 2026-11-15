@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, override
 
+from loguru import logger
+
 from payment_processor.application.errors import GatewayTemporaryError, WebhookDeliveryError
 from payment_processor.application.events import WebhookNotification
 from payment_processor.application.gateway import GatewayOutcome
@@ -49,12 +51,14 @@ class HandlePaymentEventUseCase(PaymentEventHandler):
                     if state is None or state.webhook_delivered_at is not None:
                         return
                     status, processed_at = self._final_outcome(state)
+                logger.info("event=gateway_outcome payment_id={} status={}", event.payment_id, status)
             case "succeeded" | "failed":
                 status, processed_at = self._final_outcome(state)
 
         # A confirmed retry can coexist with a redelivery of the original message.
         # Republish the next attempt without repeating an already recorded POST.
         if state.webhook_attempts >= attempt:
+            logger.info("event=webhook_attempt_already_recorded payment_id={} attempt={}", event.payment_id, attempt)
             raise WebhookDeliveryError("Webhook attempt already recorded")
 
         notification = WebhookNotification(
@@ -77,6 +81,7 @@ class HandlePaymentEventUseCase(PaymentEventHandler):
                 error=str(error),
                 exhausted_at=exhausted_at,
             )
+            logger.warning("event=webhook_failed payment_id={} attempt={}", event.payment_id, attempt)
             raise
 
         await self._payment_repo.record_webhook_delivery(
@@ -84,6 +89,7 @@ class HandlePaymentEventUseCase(PaymentEventHandler):
             attempt=attempt,
             delivered_at=datetime.now(tz=UTC),
         )
+        logger.info("event=webhook_delivered payment_id={} attempt={}", event.payment_id, attempt)
 
     @staticmethod
     def _final_outcome(state: PaymentHandlingState) -> tuple[FinalPaymentStatus, datetime]:

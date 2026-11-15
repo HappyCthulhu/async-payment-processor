@@ -1,7 +1,8 @@
 import asyncio
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+
+from loguru import logger
 
 from payment_processor.application.use_cases.relay_outbox import RelayOutboxUseCase
 from payment_processor.infrastructure.db.repositories import SqlAlchemyOutboxRepository
@@ -10,8 +11,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from payment_processor.application.ports import EventPublisher
-
-logger = logging.getLogger(__name__)
 
 
 class OutboxRelayRunner:
@@ -44,7 +43,7 @@ class OutboxRelayRunner:
             try:
                 await self.run_once(limit)
             except Exception as error:
-                logger.warning("Outbox relay pass failed (%s); retrying", type(error).__name__)
+                logger.warning("event=relay_pass_failed error_type={} action=retry", type(error).__name__)
 
             if stop_event.is_set():
                 return

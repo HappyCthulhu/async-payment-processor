@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from loguru import logger
 
 from payment_processor.api.dependencies import get_create_payment_use_case, get_payment_by_id_use_case, verify_api_key
 from payment_processor.api.schemas import CreatePaymentRequest, CreatePaymentResponse, GetPaymentByIdResponse
@@ -30,12 +31,15 @@ async def create_payment(
     )
 
     try:
-        return await use_case.execute(command)
+        result = await use_case.execute(command)
     except IdempotencyConflictError as error:
+        logger.info("event=payment_idempotency_conflict")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Idempotency-Key is already used with different payment data.",
         ) from error
+    logger.info("event=payment_accepted payment_id={} status={}", result.payment_id, result.status)
+    return result
 
 
 @router.get("/{payment_id}", response_model=GetPaymentByIdResponse)

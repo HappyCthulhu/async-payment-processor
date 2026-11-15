@@ -11,7 +11,6 @@
 
 | Область | Ответственность |
 | --- | --- |
-| `domain/` | Enum'ы, value-типы и чистые правила переходов payment. Не содержит отдельной ORM-дублирующей сущности `Payment`. |
 | `application/` | Use case'ы, интеграционные event DTO и `Protocol`-порты для хранилища, gateway, webhook и publisher. |
 | `infrastructure/db/` | SQLAlchemy-модели, session factory, Alembic и конкретные repository. |
 | `infrastructure/messaging/` | FastStream broker, exchange, queue и publisher-адаптер. |
@@ -21,8 +20,7 @@
 | `core/` | Конфигурация, логирование и явный composition root. |
 
 Зависимости направлены внутрь: `api` и `worker` вызывают `application`, а
-`infrastructure` реализует его порты. `domain` не импортирует FastAPI,
-Pydantic, SQLAlchemy, FastStream или `httpx`; `application` не импортирует их
+`infrastructure` реализует его порты. `application` не импортирует их
 конкретные реализации. Wiring выполняется явно при старте API и worker, без
 отдельной DI-библиотеки.
 
@@ -161,7 +159,7 @@ Event содержит снимок неизменяемых данных, по�
 
 ## Контракт gateway
 
-Worker зависит от асинхронного порта, который принимает event/payment snapshot и
+Worker зависит от асинхронного порта, который принимает `payment_id` и
 возвращает один `GatewayOutcome`.
 
 Задержка, распределение результатов обычного эмулятора и управляемые сценарии
@@ -187,6 +185,9 @@ Worker делает `POST` на URL из event с телом:
 HTTP 2xx означает успех. Таймаут, сетевая ошибка и любой иной статус передают
 сообщение в broker retry-путь. Webhook adapter не принимает бизнес-решения: он
 только выполняет HTTP-запрос и возвращает его технический результат.
+Повторное сообщение для уже записанной неудачи пропускает HTTP и продолжает
+retry. Запись результата не атомарна с HTTP-запросом; получатель должен
+обрабатывать дубли по `event_id`.
 
 ## Точки подмены в тестах
 
