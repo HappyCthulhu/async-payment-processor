@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from payment_processor.application.events import PaymentCreatedEvent
     from payment_processor.application.payment_types import FinalPaymentStatus
     from payment_processor.application.ports import PaymentGateway, PaymentRepository
+    from payment_processor.application.results import PaymentHandlingState
 
 MAX_WEBHOOK_DELIVERY_ATTEMPTS = 3
 
@@ -21,7 +22,7 @@ class HandlePaymentEventUseCase(PaymentEventHandler):
         self._webhook_client = webhook_client
 
     @override
-    async def execute(self, event: PaymentCreatedEvent, attempt: int) -> None:
+    async def execute(self, event: PaymentCreatedEvent, attempt: int) -> None:  # noqa: C901
         state = await self._payment_repo.get_handling_state(event.payment_id)
         if state is None or state.webhook_delivered_at is not None:
             return
@@ -44,12 +45,17 @@ class HandlePaymentEventUseCase(PaymentEventHandler):
                     processed_at,
                 )
                 if not was_recorded:
-                    return
+                    state = await self._payment_repo.get_handling_state(event.payment_id)
+                    if state is None or state.webhook_delivered_at is not None:
+                        return
+                    status, processed_at = self._final_outcome(state)
             case "succeeded" | "failed":
-                status = state.status
-                processed_at = state.processed_at
-                if processed_at is None:
-                    return
+                status, processed_at = self._final_outcome(state)
+
+        # A confirmed retry can coexist with a redelivery of the original message.
+        # Republish the next attempt without repeating an already recorded POST.
+        if state.webhook_attempts >= attempt:
+            raise WebhookDeliveryError("Webhook attempt already recorded")
 
         notification = WebhookNotification(
             amount=event.payment.amount,
@@ -78,3 +84,9 @@ class HandlePaymentEventUseCase(PaymentEventHandler):
             attempt=attempt,
             delivered_at=datetime.now(tz=UTC),
         )
+
+    @staticmethod
+    def _final_outcome(state: PaymentHandlingState) -> tuple[FinalPaymentStatus, datetime]:
+        if state.status == "pending" or state.processed_at is None:
+            raise GatewayTemporaryError
+        return state.status, state.processed_at

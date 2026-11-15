@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, override
@@ -255,3 +256,39 @@ async def test_handle_event_does_not_persist_a_temporary_gateway_error() -> None
     assert gateway.processed_payment_ids == [event.payment_id]
     assert repository.recorded_outcomes == []
     assert webhook_client.deliveries == []
+
+
+async def test_lost_gateway_update_uses_the_persisted_outcome() -> None:
+    event = payment_created_event()
+    processed_at = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+
+    class ConcurrentFinalizationRepository(StubPaymentRepository):
+        @override
+        async def record_gateway_outcome(
+            self, payment_id: UUID, status: FinalPaymentStatus, processed_at: datetime
+        ) -> bool:
+            self._state = handling_state(payment_id, status="failed", processed_at=stored_at)
+            return False
+
+    stored_at = processed_at
+    repository = ConcurrentFinalizationRepository(handling_state(event.payment_id, status="pending"))
+    webhook = RecordingWebhookClient()
+    await HandlePaymentEventUseCase(repository, RecordingGateway(GatewayOutcome.SUCCEEDED), webhook).execute(event, 1)
+
+    assert webhook.deliveries[0][1].status == "failed"
+    assert webhook.deliveries[0][1].processed_at == stored_at
+    assert len(repository.recorded_deliveries) == 1
+
+
+async def test_duplicate_failed_attempt_does_not_repeat_webhook() -> None:
+    event = payment_created_event()
+    state = handling_state(event.payment_id, status="succeeded", processed_at=datetime.now(tz=UTC))
+    state = replace(state, webhook_attempts=1)
+    repository = StubPaymentRepository(state)
+    webhook = RecordingWebhookClient()
+
+    use_case = HandlePaymentEventUseCase(repository, RecordingGateway(GatewayOutcome.SUCCEEDED), webhook)
+    with pytest.raises(WebhookDeliveryError):
+        await use_case.execute(event, 1)
+
+    assert webhook.deliveries == []
