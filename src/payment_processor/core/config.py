@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,8 @@ class Settings(BaseSettings):
     relay_batch_size: int = 10
     relay_poll_interval_seconds: float = 1.0
     relay_shutdown_timeout_seconds: float = 10.0
+    outbox_retention_days: int = Field(default=30, gt=0)
+    outbox_cleanup_batch_size: int = Field(default=100, gt=0)
     webhook_timeout_seconds: float = 10.0
 
     model_config = SettingsConfigDict(

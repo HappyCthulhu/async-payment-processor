@@ -181,3 +181,40 @@ async def test_current_claim_records_a_failure_and_releases_the_event_for_retry(
     assert stored_event.lease_expires_at is None
     assert stored_event.last_error == "RabbitMQ is unavailable"
     assert stored_event.publish_attempts == 1
+
+
+@pytest.mark.integration
+async def test_cleanup_deletes_only_a_bounded_batch_of_old_published_events(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    events = await create_outbox_events(db_session_factory, count=6)
+    now = datetime.now(UTC)
+    async with db_session_factory() as session:
+        stored = [await session.get(OutboxEvent, event.id) for event in events]
+        assert all(event is not None for event in stored)
+        for event in stored[:3]:
+            assert event is not None
+            event.status = OutboxStatus.PUBLISHED
+            event.published_at = now - timedelta(days=31)
+        assert stored[3] is not None
+        stored[3].status = OutboxStatus.PUBLISHED
+        stored[3].published_at = now - timedelta(days=1)
+        assert stored[5] is not None
+        stored[5].status = OutboxStatus.PROCESSING
+        stored[5].lease_expires_at = now - timedelta(days=31)
+        await session.commit()
+
+    async with db_session_factory() as session:
+        deleted = await SqlAlchemyOutboxRepository(session).delete_old_published(now - timedelta(days=30), limit=2)
+    assert deleted == BATCH_SIZE
+
+    async with db_session_factory() as session:
+        remaining = list((await session.scalars(select(OutboxEvent))).all())
+    assert len(remaining) == BATCH_SIZE * 2
+    assert sum(event.status is OutboxStatus.PENDING for event in remaining) == 1
+    assert sum(event.status is OutboxStatus.PROCESSING for event in remaining) == 1
+    assert (
+        sum(event.published_at is not None and event.published_at < now - timedelta(days=30) for event in remaining)
+        == 1
+    )
+    assert any(event.published_at == now - timedelta(days=1) for event in remaining)

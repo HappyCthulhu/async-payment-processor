@@ -35,3 +35,18 @@ async def test_runner_repeats_relay_passes_until_stop_is_requested() -> None:
     await runner.run_forever(limit=5, stop_event=stop_event)
 
     assert runner.run_limits == [5] * STOP_AFTER_RUNS
+
+
+async def test_runner_retries_after_a_transient_failure() -> None:
+    stop_event = asyncio.Event()
+
+    class FailingOnceRunner(RecordingOutboxRelayRunner):
+        async def run_once(self, limit: int) -> None:
+            if not self.run_limits:
+                self.run_limits.append(limit)
+                raise ConnectionError("database unavailable")
+            await super().run_once(limit)
+
+    runner = FailingOnceRunner(stop_event)
+    await runner.run_forever(limit=5, stop_event=stop_event)
+    assert runner.run_limits == [5, 5]

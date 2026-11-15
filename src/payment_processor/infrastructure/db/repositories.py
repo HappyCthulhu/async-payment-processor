@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, override
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from payment_processor.application.errors import IdempotencyConflictError
@@ -204,6 +204,22 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
 class SqlAlchemyOutboxRepository(OutboxRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def delete_old_published(self, before: datetime, limit: int) -> int:
+        if limit <= 0:
+            raise ValueError("Cleanup batch size must be positive")
+        async with self._session.begin():
+            old_ids = (
+                select(OutboxEvent.id)
+                .where(OutboxEvent.status == OutboxStatus.PUBLISHED, OutboxEvent.published_at < before)
+                .order_by(OutboxEvent.published_at, OutboxEvent.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+            result = await self._session.execute(
+                delete(OutboxEvent).where(OutboxEvent.id.in_(old_ids)).returning(OutboxEvent.id)
+            )
+            return len(result.scalars().all())
 
     @override
     async def claim_pending_events(self, limit: int) -> list[ClaimedOutboxEvent]:

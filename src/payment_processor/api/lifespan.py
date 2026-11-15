@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from asyncio import Event, create_task
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
@@ -15,23 +16,37 @@ if TYPE_CHECKING:
 
     from fastapi import FastAPI
 
+logger = logging.getLogger(__name__)
+
+
+async def run_relay(stop_event: Event) -> None:
+    while not stop_event.is_set():
+        try:
+            async with broker:
+                await declare_topology(broker=broker)
+                runner = OutboxRelayRunner(
+                    poll_interval_seconds=settings.relay_poll_interval_seconds,
+                    publisher=RabbitEventPublisher(broker=broker),
+                    session_factory=session_factory,
+                    retention_days=settings.outbox_retention_days,
+                    cleanup_batch_size=settings.outbox_cleanup_batch_size,
+                )
+                await runner.run_forever(settings.relay_batch_size, stop_event=stop_event)
+        except Exception as error:
+            logger.warning("Outbox broker connection failed (%s); retrying", type(error).__name__)
+
+        if not stop_event.is_set():
+            with suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=settings.relay_poll_interval_seconds)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
-    async with broker:
-        await declare_topology(broker=broker)
-        stop_event = Event()
-        publisher = RabbitEventPublisher(broker=broker)
-        runner = OutboxRelayRunner(
-            poll_interval_seconds=settings.relay_poll_interval_seconds,
-            publisher=publisher,
-            session_factory=session_factory,
-        )
-
-        relay_task = create_task(runner.run_forever(settings.relay_batch_size, stop_event=stop_event))
+    stop_event = Event()
+    relay_task = create_task(run_relay(stop_event))
+    try:
         yield
-
+    finally:
         stop_event.set()
-
         with suppress(TimeoutError):
             await asyncio.wait_for(relay_task, settings.relay_shutdown_timeout_seconds)
