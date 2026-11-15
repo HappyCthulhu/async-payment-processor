@@ -17,8 +17,69 @@
 пересказывают их: architecture показывает связи компонентов, contracts — формы
 данных и интерфейсы, ADR — причины решений, test-cases — способ проверки.
 
-Проект находится на стадии согласования контракта. Инструкции запуска появятся
-после создания окружения и проверки Docker Compose.
+## Быстрый запуск
+
+Нужны Docker и Docker Compose.
+Стенд предназначен для локальной разработки: опубликованные порты доступны только
+на `127.0.0.1`, а demo UI использует настроенный ключ API.
+
+Из чистого клона:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+```
+
+Compose поднимает PostgreSQL и RabbitMQ, применяет миграции отдельным заданием,
+запускает API с outbox relay в lifespan, worker и demo webhook-sink. Миграция
+успешно завершается с кодом 0. Для остановки без удаления данных: `docker compose
+down`; `docker compose down -v` также удаляет локальные данные. При наличии
+`just` доступны `just up`, `just down` и `just logs`.
+
+- Демо-форма и полученные callbacks: [http://localhost:8080](http://localhost:8080).
+- Swagger: [http://localhost:8000/docs](http://localhost:8000/docs).
+- RabbitMQ Management: [http://localhost:15672](http://localhost:15672), по
+  умолчанию `payment_broker` / `payment_broker_password`.
+- JSON полученных уведомлений: [http://localhost:8080/callbacks](http://localhost:8080/callbacks).
+
+Создание и проверка платежа без формы (используйте новый ключ для нового платежа):
+
+```bash
+curl -sS -X POST http://localhost:8000/api/v1/payments \
+  -H 'Content-Type: application/json' -H 'X-API-Key: local-development-key' \
+  -H 'Idempotency-Key: example-1' \
+  -d '{"amount":"1250.00","currency":"RUB","description":"Order 42","metadata":{"order_id":"42"},"webhook_url":"http://webhook-sink:8080/callbacks/payments"}'
+# Подставьте payment_id из ответа:
+curl -sS -H 'X-API-Key: local-development-key' http://localhost:8000/api/v1/payments/PAYMENT_ID
+curl -sS http://localhost:8080/callbacks
+```
+
+Адрес `webhook-sink` доступен внутри сети Compose. Обычный gateway завершает
+обработку за 2–5 секунд; затем появляется callback. Для демонстрации двух ошибок
+доставки и успеха задайте в `.env` `WEBHOOK_RESPONSE_SEQUENCE=500,500,204` и
+пересоздайте sink командой `docker compose up -d webhook-sink`. Последовательность
+считается отдельно для каждого payment; после её конца повторяется последний код.
+История callbacks и счётчики sink хранятся только в памяти и сбрасываются при
+перезапуске. Это локальный демонстрационный сервис, не production endpoint.
+Sink только принимает HTTP-уведомления как система клиента; эмулятор платёжного
+gateway находится внутри worker.
+
+Чтобы увидеть DLQ, задайте `WEBHOOK_RESPONSE_SEQUENCE=500,500,500`, пересоздайте
+sink и создайте новый платёж. После трёх попыток его сообщение появится в очереди
+`payments.dlq` в RabbitMQ Management (Queues and Streams). Сам платёж при этом
+сохраняет результат gateway. Результат `failed` определяется идентификатором
+платежа и вручную в форме не выбирается; создать платежи до появления `failed`
+можно через форму или проверить сценарий детерминированно в тестах gateway.
+
+Для разработки на хосте нужны Python 3.14, `uv` и `just`:
+
+```bash
+uv sync --locked
+just test                 # запускает PostgreSQL и RabbitMQ и выполняет pytest
+uv run ruff check .
+uv run ty check
+```
 
 ## Локальная инфраструктура
 

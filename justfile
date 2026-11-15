@@ -4,6 +4,18 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 default:
     @just --list
 
+# Build and start the complete demo stack (including migrations).
+up:
+    docker compose up -d --build
+
+# Stop the demo stack, preserving database and broker volumes.
+down:
+    docker compose down
+
+# Follow the demo stack logs.
+logs:
+    docker compose logs -f
+
 # Initialize Alembic once. Afterward configure alembic/env.py to use BaseModel.metadata.
 init-alembic:
     uv run alembic init alembic

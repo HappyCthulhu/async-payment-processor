@@ -1,6 +1,49 @@
 name: async-payment-processor
 
 services:
+  migrate:
+    build: .
+    environment: &app-env
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-payment_user}:${POSTGRES_PASSWORD:-payment_password}@postgres:5432/${POSTGRES_DB:-payment_processor}
+      APP_RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-payment_broker}:${RABBITMQ_DEFAULT_PASS:-payment_broker_password}@rabbitmq:5672/
+      APP_RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      APP_API_KEY: ${APP_API_KEY:-local-development-key}
+      APP_DB_ECHO: "false"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment: *app-env
+    command: ["uvicorn", "payment_processor.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build: .
+    environment: *app-env
+    command: ["faststream", "run", "payment_processor.worker.app:app"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  webhook-sink:
+    build: .
+    environment:
+      DEMO_API_URL: http://api:8000
+      APP_API_KEY: ${APP_API_KEY:-local-development-key}
+      WEBHOOK_RESPONSE_SEQUENCE: ${WEBHOOK_RESPONSE_SEQUENCE:-204}
+    command: ["uvicorn", "demo.sink:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "127.0.0.1:${WEBHOOK_SINK_PORT:-8080}:8080"
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -8,7 +51,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-payment_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payment_password}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,8 +67,8 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-payment_broker}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-payment_broker_password}
     ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:

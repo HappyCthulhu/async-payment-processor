@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Payment demo</title><style>
+body{font:16px system-ui;max-width:850px;margin:2rem auto;padding:0 1rem;color:#202737}label{display:block;margin:.8rem 0}input,select,textarea,button{font:inherit;padding:.5rem}input,textarea{box-sizing:border-box;width:100%}button{cursor:pointer}pre{background:#f1f4f8;padding:1rem;overflow:auto;white-space:pre-wrap}small{color:#526077}
+</style></head><body><h1>Payment demo</h1><p>Создайте платёж и наблюдайте его статус и webhook.</p>
+<form id="form"><label>Сумма <input id="amount" value="1250.00" required></label><label>Валюта <select id="currency"><option>RUB</option><option>USD</option><option>EUR</option></select></label><label>Описание <input id="description" value="Оплата заказа #42"></label><label>Metadata (JSON) <textarea id="metadata">{"order_id":"42"}</textarea></label><label>Webhook URL <input id="webhook" value="http://webhook-sink:8080/callbacks/payments" required></label><label>Idempotency-Key <input id="key" required></label><button>Создать платёж</button></form>
+<label>Payment ID <input id="paymentId"></label><button id="refresh">Обновить статус и callbacks</button> <small>Callbacks обновляются каждые 2 секунды; данные sink хранятся в памяти.</small><h2>Ответ API</h2><pre id="payment">—</pre><h2>Callbacks</h2><pre id="callbacks">—</pre>
+<script>
+const $=id=>document.getElementById(id); $('key').value=crypto.randomUUID();
+async function show(response, target){const data=await response.json(); $(target).textContent=JSON.stringify(data,null,2); return {ok:response.ok,data};}
+$('form').onsubmit=async e=>{e.preventDefault();try{const body={amount:$('amount').value,currency:$('currency').value,description:$('description').value,metadata:JSON.parse($('metadata').value),webhook_url:$('webhook').value};const result=await show(await fetch('/demo/payments',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':$('key').value},body:JSON.stringify(body)}),'payment');if(result.ok){$('paymentId').value=result.data.payment_id;$('key').value=crypto.randomUUID();}}catch(err){$('payment').textContent=String(err)}};
+async function refresh(){try{if($('paymentId').value)await show(await fetch('/demo/payments/'+encodeURIComponent($('paymentId').value)),'payment');await show(await fetch('/callbacks'),'callbacks')}catch(err){$('callbacks').textContent=String(err)}}
+$('refresh').onclick=refresh;setInterval(refresh,2000);refresh();
+</script></body></html>
