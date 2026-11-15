@@ -159,6 +159,45 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             processed_at=result.processed_at,
         )
 
+    @override
+    async def record_webhook_delivery(self, payment_id: UUID, attempt: int, delivered_at: datetime) -> None:
+        statement = (
+            update(Payment)
+            .where(
+                Payment.id == payment_id,
+                Payment.status.in_((PaymentStatus.FAILED, PaymentStatus.SUCCEEDED)),
+            )
+            .values(
+                webhook_attempts=attempt,
+                webhook_delivered_at=delivered_at,
+                webhook_delivery_exhausted_at=None,
+                last_error=None,
+            )
+        )
+
+        async with self._session.begin():
+            await self._session.execute(statement)
+
+    @override
+    async def record_webhook_failure(
+        self, payment_id: UUID, attempt: int, error: str, exhausted_at: datetime | None
+    ) -> None:
+        statement = (
+            update(Payment)
+            .where(
+                Payment.id == payment_id,
+                Payment.status.in_((PaymentStatus.FAILED, PaymentStatus.SUCCEEDED)),
+            )
+            .values(
+                webhook_attempts=attempt,
+                webhook_delivery_exhausted_at=exhausted_at,
+                last_error=error,
+            )
+        )
+
+        async with self._session.begin():
+            await self._session.execute(statement)
+
 
 class SqlAlchemyOutboxRepository(OutboxRepository):
     def __init__(self, session: AsyncSession) -> None:

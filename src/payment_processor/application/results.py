@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -7,13 +7,13 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from payment_processor.application.events import PaymentCreatedEvent
-    from payment_processor.application.payment_types import PaymentStatus
+    from payment_processor.application.payment_types import Currency, PaymentStatus
 
 
 @dataclass(frozen=True, slots=True)
 class PaymentResult:
     payment_id: UUID
-    status: Literal["pending", "succeeded", "failed"]
+    status: PaymentStatus
     created_at: datetime
 
 
@@ -21,11 +21,11 @@ class PaymentResult:
 class PaymentDetails:
     payment_id: UUID
     amount: Decimal
-    currency: Literal["RUB", "USD", "EUR"]
+    currency: Currency
     description: str
     metadata: dict[str, object]
     webhook_url: str
-    status: Literal["pending", "succeeded", "failed"]
+    status: PaymentStatus
     created_at: datetime
     processed_at: datetime | None
 

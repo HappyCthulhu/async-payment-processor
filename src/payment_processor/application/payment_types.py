@@ -1,5 +1,7 @@
 from typing import Literal
 
+type Currency = Literal["RUB", "USD", "EUR"]
+
 type FinalPaymentStatus = Literal["succeeded", "failed"]
 
-type PaymentStatus = Literal["succeeded", "failed", "pending"]
+type PaymentStatus = Literal["pending", "succeeded", "failed"]

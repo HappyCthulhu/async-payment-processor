@@ -5,7 +5,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from payment_processor.application.commands import CreatePaymentCommand
-    from payment_processor.application.events import PaymentCreatedEvent
+    from payment_processor.application.events import PaymentCreatedEvent, WebhookNotification
     from payment_processor.application.gateway import GatewayOutcome
     from payment_processor.application.payment_types import FinalPaymentStatus
     from payment_processor.application.results import (
@@ -30,6 +30,12 @@ class PaymentRepository(Protocol):
 
     async def get_handling_state(self, payment_id: UUID) -> PaymentHandlingState | None: ...
 
+    async def record_webhook_delivery(self, payment_id: UUID, attempt: int, delivered_at: datetime) -> None: ...
+
+    async def record_webhook_failure(
+        self, payment_id: UUID, attempt: int, error: str, exhausted_at: datetime | None
+    ) -> None: ...
+
 
 class OutboxRepository(Protocol):
     async def claim_pending_events(self, limit: int) -> list[ClaimedOutboxEvent]: ...
@@ -53,3 +59,7 @@ class PaymentEventHandler(Protocol):
 
 class RetryPublisher(Protocol):
     async def publish(self, event: PaymentCreatedEvent, retry_attempt: int) -> None: ...
+
+
+class WebhookClient(Protocol):
+    async def deliver(self, webhook_url: str, notification: WebhookNotification) -> None: ...

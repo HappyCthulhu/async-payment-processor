@@ -45,6 +45,22 @@ class StubPaymentRepository(PaymentRepository):
     async def get_handling_state(self, payment_id: UUID) -> PaymentHandlingState | None:
         return self._state
 
+    @override
+    async def record_webhook_delivery(self, payment_id: UUID, attempt: int, delivered_at: datetime) -> None:
+        raise AssertionError(f"Unexpected webhook delivery for payment {payment_id}, attempt {attempt}")
+
+    @override
+    async def record_webhook_failure(
+        self,
+        payment_id: UUID,
+        attempt: int,
+        error: str,
+        exhausted_at: datetime | None,
+    ) -> None:
+        raise AssertionError(
+            f"Unexpected webhook failure for payment {payment_id}, attempt {attempt}: {error}",
+        )
+
 
 class RecordingGateway(PaymentGateway):
     def __init__(self, outcome: GatewayOutcome) -> None:
