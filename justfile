@@ -64,6 +64,11 @@ infra-up: db-up
 api:
     uv run uvicorn payment_processor.api.app:app --reload
 
+# Run the FastStream worker that consumes payment events from RabbitMQ.
+worker:
+    just db-up
+    uv run faststream run payment_processor.worker.app:app
+
 # Run the automated test suite against an isolated PostgreSQL schema.
 test:
     just db-up
