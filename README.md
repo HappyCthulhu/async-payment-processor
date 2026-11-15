@@ -87,6 +87,8 @@ uv run ty check
 PostgreSQL и RabbitMQ запускаются одной командой `just db-up`. PostgreSQL по
 умолчанию доступен на порту `5433`, чтобы не конфликтовать с PostgreSQL на
 `5432`. После запуска можно выполнять Alembic-команды из `justfile`.
+`APP_DB_ECHO` по умолчанию выключен: включайте его только при осознанной
+отладке, поскольку SQL-логи могут содержать webhook URL и metadata платежа.
 
 AMQP RabbitMQ доступен на порту `5672`, а Management UI — на
 [http://localhost:15672](http://localhost:15672). Логин и пароль находятся в

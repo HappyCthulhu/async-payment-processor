@@ -64,6 +64,32 @@ async def test_create_payment_log_omits_credentials_and_payment_data(client: Asy
 
 
 @pytest.mark.integration
+async def test_webhook_url_limit_applies_after_normalization(
+    client: AsyncClient, db_session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    prefix = "https://example.com/"
+    # One non-ASCII character becomes six URL characters after normalization.
+    oversized = prefix + "a" * (2048 - len(prefix) - 1) + "é"
+    response = await client.post(
+        PAYMENTS_PATH,
+        headers=payment_headers(),
+        json={**PAYMENT_REQUEST, "webhook_url": oversized},
+    )
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    async with db_session_factory() as session:
+        assert (await session.scalars(select(Payment))).all() == []
+        assert (await session.scalars(select(OutboxEvent))).all() == []
+
+    at_limit = prefix + "a" * (2048 - len(prefix))
+    response = await client.post(
+        PAYMENTS_PATH,
+        headers=payment_headers(),
+        json={**PAYMENT_REQUEST, "webhook_url": at_limit},
+    )
+    assert response.status_code == status.HTTP_202_ACCEPTED
+
+
+@pytest.mark.integration
 async def test_create_payment_accepts_request_and_persists_payment_with_outbox(
     client: AsyncClient,
     db_session_factory: async_sessionmaker[AsyncSession],
