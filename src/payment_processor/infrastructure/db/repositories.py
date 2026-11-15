@@ -156,6 +156,7 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             payment_id=result.id,
             status=result.status.value,
             webhook_attempts=result.webhook_attempts,
+            last_recorded_webhook_attempt=result.last_recorded_webhook_attempt,
             webhook_delivered_at=result.webhook_delivered_at,
             webhook_delivery_exhausted_at=result.webhook_delivery_exhausted_at,
             processed_at=result.processed_at,
@@ -168,9 +169,11 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             .where(
                 Payment.id == payment_id,
                 Payment.status.in_((PaymentStatus.FAILED, PaymentStatus.SUCCEEDED)),
+                Payment.last_recorded_webhook_attempt < attempt,
             )
             .values(
-                webhook_attempts=attempt,
+                webhook_attempts=Payment.webhook_attempts + 1,
+                last_recorded_webhook_attempt=attempt,
                 webhook_delivered_at=delivered_at,
                 webhook_delivery_exhausted_at=None,
                 last_error=None,
@@ -189,9 +192,11 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             .where(
                 Payment.id == payment_id,
                 Payment.status.in_((PaymentStatus.FAILED, PaymentStatus.SUCCEEDED)),
+                Payment.last_recorded_webhook_attempt < attempt,
             )
             .values(
-                webhook_attempts=attempt,
+                webhook_attempts=Payment.webhook_attempts + 1,
+                last_recorded_webhook_attempt=attempt,
                 webhook_delivery_exhausted_at=exhausted_at,
                 last_error=error,
             )

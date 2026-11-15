@@ -57,7 +57,7 @@ class HandlePaymentEventUseCase(PaymentEventHandler):
 
         # A confirmed retry can coexist with a redelivery of the original message.
         # Republish the next attempt without repeating an already recorded POST.
-        if state.webhook_attempts >= attempt:
+        if state.last_recorded_webhook_attempt >= attempt:
             logger.info("event=webhook_attempt_already_recorded payment_id={} attempt={}", event.payment_id, attempt)
             raise WebhookDeliveryError("Webhook attempt already recorded")
 

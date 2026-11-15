@@ -41,6 +41,7 @@ class PaymentHandlingState:
     payment_id: UUID
     status: PaymentStatus
     webhook_attempts: int
+    last_recorded_webhook_attempt: int
     webhook_delivered_at: datetime | None
     webhook_delivery_exhausted_at: datetime | None
     processed_at: datetime | None

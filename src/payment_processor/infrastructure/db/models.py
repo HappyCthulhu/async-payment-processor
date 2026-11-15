@@ -62,6 +62,7 @@ class Payment(BaseModel):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     webhook_url: Mapped[str] = mapped_column(String(2048))
     webhook_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_recorded_webhook_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     webhook_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     webhook_delivery_exhausted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     currency: Mapped[PaymentCurrency] = mapped_column(

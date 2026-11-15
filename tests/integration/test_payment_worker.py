@@ -236,6 +236,7 @@ async def test_webhook_retries_and_dead_letter(  # noqa: C901, PLR0913, PLR0915,
 
     assert payment.status is expected_status
     assert payment.webhook_attempts == len(responses)
+    assert payment.last_recorded_webhook_attempt == len(responses)
     assert (payment.webhook_delivery_exhausted_at is not None) is exhausted
     assert (payment.webhook_delivered_at is not None) is not exhausted
     assert len(calls) == len(responses)
@@ -276,5 +277,43 @@ async def test_redelivery_after_failure_before_retry_publish(
 
     assert payment.status is PaymentStatus.FAILED
     assert payment.webhook_attempts == 2  # noqa: PLR2004
+    assert payment.last_recorded_webhook_attempt == 2  # noqa: PLR2004
     assert len(calls) == 1
     assert await queue_message_count(PAYMENTS_DLQ_QUEUE_NAME) == 0
+
+
+@pytest.mark.integration
+async def test_gateway_failures_do_not_count_as_webhook_posts(
+    db_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_calls: list[UUID] = []
+    webhook_calls: list[httpx.Request] = []
+
+    class Gateway:
+        async def process(self, payment_id: UUID) -> GatewayOutcome:
+            gateway_calls.append(payment_id)
+            return GatewayOutcome.TEMPORARY_ERROR if len(gateway_calls) < 3 else GatewayOutcome.SUCCEEDED  # noqa: PLR2004
+
+    def client() -> httpx.AsyncClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            webhook_calls.append(request)
+            return httpx.Response(204)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
+
+    monkeypatch.setattr(worker_app, "session_factory", db_session_factory)
+    monkeypatch.setattr(worker_app, "GatewayEmulator", Gateway)
+    monkeypatch.setattr(worker_app, "create_webhook_http_client", client)
+    async with broker:
+        await declare_topology(broker)
+    await clear_payment_queues()
+    payment_id, event = await create_payment_event(db_session_factory)
+
+    async with worker_app.app:
+        await broker.publish(event, queue=PAYMENTS_NEW_QUEUE, exchange=PAYMENTS_EXCHANGE, persist=True)
+        payment = await wait_for_completed_payment(db_session_factory, payment_id)
+
+    assert gateway_calls == [payment_id] * 3
+    assert len(webhook_calls) == 1
+    assert payment.webhook_attempts == 1
+    assert payment.last_recorded_webhook_attempt == 3  # noqa: PLR2004

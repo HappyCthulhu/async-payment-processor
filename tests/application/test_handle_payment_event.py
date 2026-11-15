@@ -115,6 +115,7 @@ def handling_state(
         status=status,
         processed_at=processed_at,
         webhook_attempts=0,
+        last_recorded_webhook_attempt=0,
         webhook_delivered_at=webhook_delivered_at,
         webhook_delivery_exhausted_at=None,
     )
@@ -283,7 +284,7 @@ async def test_lost_gateway_update_uses_the_persisted_outcome() -> None:
 async def test_duplicate_failed_attempt_does_not_repeat_webhook() -> None:
     event = payment_created_event()
     state = handling_state(event.payment_id, status="succeeded", processed_at=datetime.now(tz=UTC))
-    state = replace(state, webhook_attempts=1)
+    state = replace(state, webhook_attempts=1, last_recorded_webhook_attempt=1)
     repository = StubPaymentRepository(state)
     webhook = RecordingWebhookClient()
 

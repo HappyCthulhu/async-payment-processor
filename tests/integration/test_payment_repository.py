@@ -231,7 +231,8 @@ async def test_record_webhook_delivery_persists_delivery_and_clears_prior_failur
     assert payment is not None
     assert payment.status is PaymentStatus.SUCCEEDED
     assert payment.processed_at == processed_at
-    assert payment.webhook_attempts == delivered_attempt
+    assert payment.webhook_attempts == 2  # noqa: PLR2004
+    assert payment.last_recorded_webhook_attempt == delivered_attempt
     assert payment.webhook_delivered_at == delivered_at
     assert payment.webhook_delivery_exhausted_at is None
     assert payment.last_error is None
@@ -274,7 +275,8 @@ async def test_record_webhook_failure_persists_failure_without_changing_payment_
     assert payment is not None
     assert payment.status is PaymentStatus.FAILED
     assert payment.processed_at == processed_at
-    assert payment.webhook_attempts == failed_attempt
+    assert payment.webhook_attempts == 1
+    assert payment.last_recorded_webhook_attempt == failed_attempt
     assert payment.webhook_delivered_at is None
     assert payment.webhook_delivery_exhausted_at == exhausted_at
     assert payment.last_error == "Webhook endpoint returned 500"
