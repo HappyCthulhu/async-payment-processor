@@ -78,9 +78,18 @@ def build_payment_event_consumer(session: AsyncSession) -> PaymentEventConsumer:
     ),
 )
 async def consume_payment_created_event(event: PaymentCreatedEvent, message: RabbitMessage) -> None:
-    async with session_factory() as session:
-        consumer = build_payment_event_consumer(session=session)
-        await consumer.consume(event=event, message=message)
+    try:
+        async with session_factory() as session:
+            consumer = build_payment_event_consumer(session=session)
+            await consumer.consume(event=event, message=message)
+    except Exception as error:
+        logger.warning(
+            "event=payment_subscriber_error payment_id={} error_type={} action=requeue_if_unsettled",
+            event.payment_id,
+            type(error).__name__,
+        )
+        if not message.raw_message.locked:
+            await message.reject(requeue=True)
 
 
 app = FastStream(broker, after_startup=(startup,), after_shutdown=(shutdown,))

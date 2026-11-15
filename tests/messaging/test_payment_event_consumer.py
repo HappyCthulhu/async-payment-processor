@@ -1,17 +1,22 @@
+import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, cast, override
+from typing import cast, override
 from uuid import uuid4
 
 import pytest
+from faststream import AckPolicy, FastStream
+from faststream.rabbit import Channel, RabbitBroker, RabbitMessage, RabbitQueue
+from loguru import logger
 
+import payment_processor.worker.app as worker_app
 from payment_processor.application.errors import GatewayTemporaryError, WebhookDeliveryError
 from payment_processor.application.events import PaymentCreatedEvent, PaymentSnapshot
 from payment_processor.application.ports import PaymentEventHandler, RetryPublisher
+from payment_processor.core.config import settings
 from payment_processor.worker.consumer import PaymentEventConsumer
-
-if TYPE_CHECKING:
-    from faststream.rabbit import RabbitMessage
 
 
 class RecordingHandlePaymentEventUseCase(PaymentEventHandler):
@@ -122,19 +127,133 @@ async def test_consumer_rejects_an_exhausted_temporary_failure_for_dead_letterin
     assert message.rejected_with == [False]
 
 
-async def test_consumer_keeps_original_message_unacknowledged_when_retry_publish_fails() -> None:
+async def test_consumer_requeues_original_message_when_retry_publish_fails() -> None:
     retry_publish_error = RuntimeError("RabbitMQ is unavailable")
     use_case = RecordingHandlePaymentEventUseCase(GatewayTemporaryError())
     retry_publisher = RecordingRetryPublisher(error=retry_publish_error)
     message = RecordingMessage(attempt=1)
     consumer = PaymentEventConsumer(use_case=use_case, retry_publisher=retry_publisher)
 
-    with pytest.raises(RuntimeError, match="RabbitMQ is unavailable"):
-        await consumer.consume(event=payment_created_event(), message=cast("RabbitMessage", message))
+    event = payment_created_event()
+    await consumer.consume(event=event, message=cast("RabbitMessage", message))
 
     assert retry_publisher.published_events == []
     assert message.acknowledged is False
-    assert message.rejected_with == []
+    assert message.rejected_with == [True]
+
+    retry_publisher._error = None
+    redelivery = RecordingMessage(attempt=1)
+    await consumer.consume(event=event, message=cast("RabbitMessage", redelivery))
+    assert retry_publisher.published_events == [(event, 2)]
+    assert redelivery.acknowledged is True
+
+
+async def test_consumer_requeues_after_unexpected_failure_and_handles_redelivery() -> None:
+    use_case = RecordingHandlePaymentEventUseCase(RuntimeError("database unavailable"))
+    consumer = PaymentEventConsumer(use_case=use_case, retry_publisher=RecordingRetryPublisher())
+    event = payment_created_event()
+    first = RecordingMessage()
+    await consumer.consume(event=event, message=cast("RabbitMessage", first))
+    assert first.rejected_with == [True]
+    assert first.acknowledged is False
+
+    use_case._error = None
+    redelivery = RecordingMessage()
+    await consumer.consume(event=event, message=cast("RabbitMessage", redelivery))
+    assert redelivery.acknowledged is True
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failure", ["publisher", "handler"])
+async def test_worker_releases_prefetch_and_continues_after_transient_error(failure: str) -> None:
+    completed = asyncio.Event()
+    calls = 0
+    publish_calls = 0
+    second_call = 2
+    third_call = 3
+
+    class FailingOnceHandler:
+        async def execute(self, event: PaymentCreatedEvent, attempt: int) -> None:
+            nonlocal calls
+            assert event.event_id is not None
+            assert attempt == 1
+            calls += 1
+            if failure == "handler" and calls == 1:
+                raise RuntimeError("temporary database error")
+            if failure == "publisher" and calls <= second_call:
+                raise GatewayTemporaryError
+            if calls == third_call:
+                completed.set()
+
+    class FailingOncePublisher:
+        async def publish(self, event: PaymentCreatedEvent, retry_attempt: int) -> None:
+            nonlocal publish_calls
+            assert event.event_id is not None
+            assert retry_attempt == second_call
+            publish_calls += 1
+            if publish_calls == 1:
+                raise RuntimeError("temporary publish error")
+
+    broker = RabbitBroker(settings.rabbitmq_url)
+    queue = RabbitQueue(f"test.consumer.{uuid4().hex}", auto_delete=True)
+    consumer = PaymentEventConsumer(FailingOnceHandler(), FailingOncePublisher())
+
+    @broker.subscriber(queue, ack_policy=AckPolicy.MANUAL, channel=Channel(prefetch_count=1))
+    async def handle(event: PaymentCreatedEvent, message: RabbitMessage) -> None:
+        await consumer.consume(event, message)
+
+    async with FastStream(broker):
+        event = payment_created_event()
+        await broker.publish(event, queue=queue)
+        await broker.publish(event, queue=queue)
+        await asyncio.wait_for(completed.wait(), timeout=5)
+    assert calls == third_call
+
+
+@pytest.mark.integration
+async def test_subscriber_requeues_when_session_setup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    completed = asyncio.Event()
+    factory_calls = 0
+    handled = 0
+
+    @asynccontextmanager
+    async def session_factory() -> AsyncGenerator[object]:
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls == 1:
+            raise ConnectionError("database temporarily unavailable")
+        yield object()
+
+    class SuccessfulHandler:
+        async def execute(self, event: PaymentCreatedEvent, attempt: int) -> None:
+            nonlocal handled
+            assert event.event_id is not None
+            assert attempt == 1
+            handled += 1
+            if handled == 2:  # noqa: PLR2004
+                completed.set()
+
+    consumer = PaymentEventConsumer(SuccessfulHandler(), RecordingRetryPublisher())
+
+    def build_consumer(session: object) -> PaymentEventConsumer:
+        assert session is not None
+        return consumer
+
+    monkeypatch.setattr(worker_app, "session_factory", session_factory)
+    monkeypatch.setattr(worker_app, "build_payment_event_consumer", build_consumer)
+    broker = RabbitBroker(settings.rabbitmq_url)
+    queue = RabbitQueue(f"test.subscriber.{uuid4().hex}", auto_delete=True)
+
+    @broker.subscriber(queue, ack_policy=AckPolicy.MANUAL, channel=Channel(prefetch_count=1))
+    async def handle(event: PaymentCreatedEvent, message: RabbitMessage) -> None:
+        await worker_app.consume_payment_created_event(event, message)
+
+    async with FastStream(broker):
+        event = payment_created_event()
+        await broker.publish(event, queue=queue)
+        await broker.publish(event, queue=queue)
+        await asyncio.wait_for(completed.wait(), timeout=5)
+    assert factory_calls == 3  # noqa: PLR2004
 
 
 async def test_consumer_retries_a_webhook_delivery_error() -> None:
@@ -150,3 +269,24 @@ async def test_consumer_retries_a_webhook_delivery_error() -> None:
     assert retry_publisher.published_events == [(event, 2)]
     assert message.acknowledged is True
     assert message.rejected_with == []
+
+
+async def test_retry_log_excludes_error_details_and_event_payload() -> None:
+    logs: list[str] = []
+    sink_id = logger.add(lambda message: logs.append(str(message)), format="{message}")
+    try:
+        event = payment_created_event()
+        consumer = PaymentEventConsumer(
+            use_case=RecordingHandlePaymentEventUseCase(WebhookDeliveryError("sensitive-error-detail")),
+            retry_publisher=RecordingRetryPublisher(),
+        )
+        await consumer.consume(event, cast("RabbitMessage", RecordingMessage()))
+    finally:
+        logger.remove(sink_id)
+
+    output = "".join(logs)
+    assert "event=payment_retry_published" in output
+    assert str(event.payment_id) in output
+    assert "sensitive-error-detail" not in output
+    assert "webhook-sink" not in output
+    assert "order_id" not in output
