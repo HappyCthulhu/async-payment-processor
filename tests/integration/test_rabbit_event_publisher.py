@@ -8,7 +8,7 @@ from payment_processor.application.events import PaymentCreatedEvent, PaymentSna
 from payment_processor.core.config import settings
 from payment_processor.infrastructure.messaging.broker import broker
 from payment_processor.infrastructure.messaging.publisher import RabbitEventPublisher
-from payment_processor.infrastructure.messaging.topology import NEW_PAYMENTS_Q_NAME, declare_topology
+from payment_processor.infrastructure.messaging.topology import PAYMENTS_NEW_QUEUE_NAME, declare_topology
 
 PERSISTENT_DELIVERY_MODE = 2
 
@@ -39,7 +39,7 @@ async def test_publisher_sends_a_persistent_payment_created_event_to_main_queue(
     auth = (connection.username, connection.password)
     async with httpx.AsyncClient(trust_env=False) as client:
         clear_response = await client.delete(
-            f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{NEW_PAYMENTS_Q_NAME}/contents",
+            f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{PAYMENTS_NEW_QUEUE_NAME}/contents",
             auth=auth,
         )
     assert clear_response.status_code == httpx.codes.NO_CONTENT
@@ -50,7 +50,7 @@ async def test_publisher_sends_a_persistent_payment_created_event_to_main_queue(
 
     async with httpx.AsyncClient(trust_env=False) as client:
         messages_response = await client.post(
-            f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{NEW_PAYMENTS_Q_NAME}/get",
+            f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{PAYMENTS_NEW_QUEUE_NAME}/get",
             auth=auth,
             json={"count": 1, "ackmode": "ack_requeue_false", "encoding": "auto", "truncate": 50_000},
         )
@@ -59,6 +59,6 @@ async def test_publisher_sends_a_persistent_payment_created_event_to_main_queue(
     messages = messages_response.json()
     assert len(messages) == 1
     assert messages[0]["exchange"] == "payments.exchange"
-    assert messages[0]["routing_key"] == NEW_PAYMENTS_Q_NAME
+    assert messages[0]["routing_key"] == PAYMENTS_NEW_QUEUE_NAME
     assert messages[0]["properties"]["delivery_mode"] == PERSISTENT_DELIVERY_MODE
     assert messages[0]["payload"] == event.model_dump_json()

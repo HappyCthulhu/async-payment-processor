@@ -13,7 +13,7 @@ from payment_processor.infrastructure.db.models import OutboxEvent, OutboxStatus
 from payment_processor.infrastructure.messaging.broker import broker
 from payment_processor.infrastructure.messaging.publisher import RabbitEventPublisher
 from payment_processor.infrastructure.messaging.relay_runner import OutboxRelayRunner
-from payment_processor.infrastructure.messaging.topology import NEW_PAYMENTS_Q_NAME, declare_topology
+from payment_processor.infrastructure.messaging.topology import PAYMENTS_NEW_QUEUE_NAME, declare_topology
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
@@ -53,7 +53,7 @@ async def test_relay_publishes_created_payment_event_and_marks_outbox_row_publis
 
         async with httpx.AsyncClient(trust_env=False) as management_client:
             clear_response = await management_client.delete(
-                f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{NEW_PAYMENTS_Q_NAME}/contents",
+                f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{PAYMENTS_NEW_QUEUE_NAME}/contents",
                 auth=auth,
             )
         assert clear_response.status_code == httpx.codes.NO_CONTENT
@@ -83,7 +83,7 @@ async def test_relay_publishes_created_payment_event_and_marks_outbox_row_publis
 
     async with httpx.AsyncClient(trust_env=False) as management_client:
         messages_response = await management_client.post(
-            f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{NEW_PAYMENTS_Q_NAME}/get",
+            f"{settings.rabbitmq_management_url}/api/queues/{vhost}/{PAYMENTS_NEW_QUEUE_NAME}/get",
             auth=auth,
             json={"count": 1, "ackmode": "ack_requeue_false", "encoding": "auto", "truncate": 50_000},
         )
@@ -92,5 +92,5 @@ async def test_relay_publishes_created_payment_event_and_marks_outbox_row_publis
     messages = messages_response.json()
     assert len(messages) == 1
     assert messages[0]["exchange"] == "payments.exchange"
-    assert messages[0]["routing_key"] == NEW_PAYMENTS_Q_NAME
+    assert messages[0]["routing_key"] == PAYMENTS_NEW_QUEUE_NAME
     assert json.loads(messages[0]["payload"])["payment_id"] == str(payment_id)
