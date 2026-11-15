@@ -1,27 +1,29 @@
-# ADR 001: transactional outbox для payment.created
+# ADR 001: Transactional outbox for `payment.created`
 
-## Статус
+## Status
 
-Принято.
+Accepted.
 
-## Контекст
+## Context
 
-Создание payment в PostgreSQL и публикация события в RabbitMQ не имеют общей
-транзакции. При публикации до commit можно доставить событие о несуществующем
-платеже. При публикации после commit процесс может умереть между двумя операциями.
+Creating a payment in PostgreSQL and publishing an event to RabbitMQ do not share
+a transaction. Publishing before the database commit could deliver an event for
+a payment that does not exist. Publishing after the commit leaves a failure
+window between the two operations.
 
-## Решение
+## Decision
 
-API создаёт payment и outbox event в одной PostgreSQL-транзакции. Relay публикует
-неопубликованные записи асинхронно и ставит `published` только после broker confirm.
+The API creates the payment and outbox event in one PostgreSQL transaction. The
+relay publishes unpublished records asynchronously and marks them `published`
+only after broker confirmation.
 
-## Последствия
+## Consequences
 
-Гарантия публикации — at-least-once. Повторная публикация после аварии допустима;
-worker обязан безопасно перенести повторную доставку.
+The delivery guarantee is at least once. Republishing after a failure is expected;
+the worker must safely handle duplicate deliveries.
 
-При штатной остановке relay перестаёт забирать новые записи и в ограниченное
-время завершает уже начатую публикацию. Без broker confirm запись не получает
-статус `published`; после отмены или тайм-аута она останется `pending` для
-следующего запуска. Если RabbitMQ принял сообщение, но процесс не успел
-зафиксировать `published`, повторная публикация после рестарта ожидаема.
+During graceful shutdown, the relay stops claiming new records and completes
+in-flight publishes within a bounded time. Without broker confirmation, a record
+is not marked `published`; after cancellation or timeout it remains available
+for a later attempt. If RabbitMQ accepted the message but the process did not
+persist the `published` state, publishing it again after restart is expected.

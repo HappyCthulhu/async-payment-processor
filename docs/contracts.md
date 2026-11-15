@@ -1,40 +1,40 @@
-# Контракты компонентов
+# Component contracts
 
-Этот документ задаёт публичные границы будущего кода. Он не предписывает
-внутреннюю реализацию, но стабилизирует то, что будут проверять тесты.
-Правила обработки и бизнес-значения принадлежат
-[спецификации](spec.md); здесь остаются только типы, формы данных и операции.
+This document defines the public boundaries of the code. It does not prescribe
+internal implementation, but stabilizes the behavior checked by tests. Processing
+rules and business values belong to the [specification](spec.md); this document
+focuses on types, data shapes, and operations.
 
-## Границы кода и структура пакета
+## Code boundaries and package structure
 
-Код располагается в `src/payment_processor/`.
+Code lives in `src/payment_processor/`.
 
-| Область | Ответственность |
+| Area | Responsibility |
 | --- | --- |
-| `application/` | Use case'ы, интеграционные event DTO и `Protocol`-порты для хранилища, gateway, webhook и publisher. |
-| `infrastructure/db/` | SQLAlchemy-модели, session factory, Alembic и конкретные repository. |
-| `infrastructure/messaging/` | FastStream broker, exchange, queue и publisher-адаптер. |
-| `infrastructure/integrations/` | Gateway emulator и HTTP-клиент webhook. |
-| `api/` | FastAPI app, routers, Pydantic-схемы, API key dependency и запуск relay в lifespan. |
-| `worker/` | FastStream consumer и wiring use case'ов worker. |
-| `core/` | Конфигурация, логирование и явный composition root. |
+| `application/` | Use cases, integration event DTOs, and `Protocol` ports for storage, the gateway, webhooks, and publishing. |
+| `infrastructure/db/` | SQLAlchemy models, session factory, Alembic, and concrete repositories. |
+| `infrastructure/messaging/` | FastStream broker, exchange, queues, and publisher adapter. |
+| `infrastructure/integrations/` | Gateway emulator and webhook HTTP client. |
+| `api/` | FastAPI app, routers, Pydantic schemas, API-key dependency, and relay startup in the lifespan. |
+| `worker/` | FastStream consumer and worker use-case wiring. |
+| `core/` | Configuration, logging, and explicit composition root. |
 
-Зависимости направлены внутрь: `api` и `worker` вызывают `application`, а
-`infrastructure` реализует его порты. `application` не импортирует их
-конкретные реализации. Wiring выполняется явно при старте API и worker, без
-отдельной DI-библиотеки.
+Dependencies point inward: `api` and `worker` call `application`, while
+`infrastructure` implements its ports. `application` does not import concrete
+infrastructure implementations. Wiring is explicit at API and worker startup,
+without a separate dependency-injection library.
 
-Use case'ы: `create_payment`, `get_payment`, `relay_outbox` и
-`handle_payment_event`. Каждый описывает один сценарий; HTTP-router и consumer
-не содержат бизнес-правил. `AsyncSession` остаётся деталью infrastructure и
-служит практическим Unit of Work — отдельную общую UoW-абстракцию не вводим.
+The use cases are `create_payment`, `get_payment`, `relay_outbox`, and
+`handle_payment_event`. Each describes one scenario; HTTP routers and consumers
+contain no business rules. `AsyncSession` remains an infrastructure detail and
+serves as a practical Unit of Work; no shared UoW abstraction is introduced.
 
-Используются только предметные порты: `PaymentRepository`, `OutboxRepository`,
-`PaymentGateway`, `WebhookClient`, `EventPublisher`. Универсальный
-`BaseRepository[T]`, CQRS/read model, Event Sourcing, mediator и дублирующая
-богатая domain-модель не входят в проект.
+Only domain-specific ports are used: `PaymentRepository`, `OutboxRepository`,
+`PaymentGateway`, `WebhookClient`, and `EventPublisher`. A generic
+`BaseRepository[T]`, CQRS/read models, Event Sourcing, a mediator, and a duplicate
+rich domain model are out of scope.
 
-## Типы домена
+## Domain types
 
 ```text
 PaymentStatus = pending | succeeded | failed
@@ -43,14 +43,14 @@ OutboxStatus = pending | processing | published
 GatewayOutcome = succeeded | failed | temporary_error
 ```
 
-`failed` от gateway — подтверждённый бизнес-результат. `temporary_error`
-означает, что итога ещё нет и event должен быть повторён.
+A gateway `failed` result is a confirmed business outcome. `temporary_error`
+means no outcome is known yet and the event should be retried.
 
-## HTTP-контракт
+## HTTP contract
 
-### POST /api/v1/payments
+### `POST /api/v1/payments`
 
-Вход: `CreatePaymentRequest`.
+Input: `CreatePaymentRequest`.
 
 ```text
 amount: Decimal > 0
@@ -60,10 +60,10 @@ metadata: dict[str, JSON value]
 webhook_url: HttpUrl
 ```
 
-Верхнеуровневые неизвестные поля запрещены. Заголовки `X-API-Key` и
-`Idempotency-Key` обязательны.
+Unknown top-level fields are rejected. The `X-API-Key` and `Idempotency-Key`
+headers are required.
 
-Выход при успехе: `CreatePaymentResponse`.
+Successful output: `CreatePaymentResponse`.
 
 ```text
 payment_id: UUID
@@ -71,30 +71,30 @@ status: PaymentStatus
 created_at: datetime
 ```
 
-Коды: `202` для новой или идентичной повторной заявки, `401` для ключа API,
-`409` при конфликтующем повторе, `422` при невалидном body.
+Status codes: `202` for a new request or an identical retry, `401` for an invalid
+API key, `409` for a conflicting retry, and `422` for an invalid body.
 
-### GET /api/v1/payments/{payment_id}
+### `GET /api/v1/payments/{payment_id}`
 
-Выход: `PaymentResponse` с публичными полями input, `payment_id`, `status`,
-`created_at`, `processed_at`. Внутренние счётчики, ошибки и outbox state не
-возвращаются. Коды: `200`, `401`, `404`.
+Output: `PaymentResponse` with public input fields, `payment_id`, `status`,
+`created_at`, and `processed_at`. Internal counters, errors, and outbox state are
+not returned. Status codes: `200`, `401`, and `404`.
 
-## Контракт хранилища
+## Storage contract
 
-API вызывает одну атомарную операцию создания. Её observable-результат:
+The API calls one atomic creation operation. Its observable result is:
 
 ```text
 create_payment_with_outbox(request, idempotency_key)
   -> Created(payment) | Existing(payment) | Conflict
 ```
 
-Операция либо создаёт payment и `payment.created` outbox вместе, либо не создаёт
-ничего. Уникальное ограничение `idempotency_key` — окончательный арбитр при
-конкурентных запросах.
+The operation either creates the payment and its `payment.created` outbox event
+together or creates neither. The unique `idempotency_key` constraint is the
+final arbiter when requests race.
 
-Relay получает и меняет состояние outbox только через операции с ограниченными
-переходами:
+The relay reads and changes outbox state only through operations with constrained
+transitions:
 
 ```text
 claim_pending_outbox(limit) -> list[ClaimedOutboxEvent]
@@ -102,25 +102,23 @@ mark_outbox_published(event_id, claim_token, published_at)
 record_outbox_publish_failure(event_id, claim_token, error)
 ```
 
-`claim_pending_outbox` захватывает строки короткой транзакцией с `FOR UPDATE
-SKIP LOCKED` и переводит их из `pending` в `processing`. SQL-lock существует
-только до коммита claim-транзакции; `processing` — устойчиво сохранённое
-состояние, а не название самого SQL-lock.
+`claim_pending_outbox` locks rows in a short transaction using `FOR UPDATE SKIP
+LOCKED` and moves them from `pending` to `processing`. The SQL lock exists only
+until the claim transaction commits; `processing` is persisted state, not the
+name of the SQL lock.
 
-Только relay, владеющий захваченным событием, может перевести его из
-`processing` в `published` после publisher confirm. Известная ошибка публикации
-возвращает событие из `processing` в `pending`. При shutdown relay прекращает
-новый claim; незавершённое событие остаётся `processing` до восстановления его
-lease следующим relay. Это сознательно допускает повторную публикацию после
-рестарта.
+Only the relay that owns a claim may move it from `processing` to `published`
+after publisher confirmation. A known publish failure returns the event to
+`pending`. During shutdown, the relay stops claiming rows; unfinished events
+remain `processing` until another relay can recover them after lease expiry. This
+intentionally allows a duplicate publish after a restart.
 
-Захват идентифицируется `claim_token`, а не только `event_id`. Relay передаёт
-token вместе с каждой операцией финализации: запоздавший владелец не может
-пометить опубликованной или вернуть в `pending` запись, которую уже повторно
-захватил другой relay.
+Ownership is identified by `claim_token`, not only by `event_id`. The relay sends
+the token with each finalization operation, so a stale owner cannot mark an event
+published or return it to `pending` after another relay has reclaimed it.
 
-Worker читает payment state перед внешними действиями и записывает только
-допустимые изменения:
+The worker reads payment state before external actions and records only allowed
+changes:
 
 ```text
 get_payment_state_for_handling(payment_id)
@@ -129,9 +127,9 @@ record_webhook_delivery(payment_id, delivered_at)
 record_webhook_failure(payment_id, attempt, error, exhausted_at?)
 ```
 
-## Контракт события RabbitMQ
+## RabbitMQ event contract
 
-Exchange: `payments.exchange`. Основной routing key/queue: `payments.new`.
+Exchange: `payments.exchange`. Main routing key/queue: `payments.new`.
 
 ```json
 {
@@ -143,32 +141,33 @@ Exchange: `payments.exchange`. Основной routing key/queue: `payments.new
   "payment": {
     "amount": "1250.00",
     "currency": "RUB",
-    "description": "Оплата заказа #42",
+    "description": "Order #42 payment",
     "metadata": {"order_id": "42"},
     "webhook_url": "http://webhook-sink:8080/callbacks/payments"
   }
 }
 ```
 
-Event содержит снимок неизменяемых данных, поэтому worker не повторяет их read из
-БД. Его status и webhook delivery state не входят в event.
+The event contains a snapshot of immutable data, so the worker does not need to
+read those fields from the database again. Payment status and webhook delivery
+state are not included in the event.
 
-Заголовок `x-payment-attempt` начинается с `1`. При передаче в retry worker
-увеличивает его после подтверждённой публикации нового сообщения. Значение
-используется вместе с устойчивым состоянием payments, а не вместо него.
+The `x-payment-attempt` header starts at `1`. When the worker republishes a
+message for retry, it increments the value after the new message is confirmed.
+The value is used alongside persistent payment state, not as a replacement for it.
 
-## Контракт gateway
+## Gateway contract
 
-Worker зависит от асинхронного порта, который принимает `payment_id` и
-возвращает один `GatewayOutcome`.
+The worker depends on an asynchronous port that accepts `payment_id` and returns
+one `GatewayOutcome`.
 
-Задержка, распределение результатов обычного эмулятора и управляемые сценарии
-для тестов определены в [спецификации](spec.md#обработка-платежа). Это поведение,
-а не деталь программного контракта.
+The regular emulator's delay and result distribution, as well as controllable
+test scenarios, are defined in the [specification](spec.md#payment-processing).
+These are behavioral rules, not details of the programming interface.
 
-## Контракт webhook
+## Webhook contract
 
-Worker делает `POST` на URL из event с телом:
+The worker sends a `POST` to the URL in the event with this body:
 
 ```json
 {
@@ -182,21 +181,21 @@ Worker делает `POST` на URL из event с телом:
 }
 ```
 
-HTTP 2xx означает успех. Таймаут, сетевая ошибка и любой иной статус передают
-сообщение в broker retry-путь. Webhook adapter не принимает бизнес-решения: он
-только выполняет HTTP-запрос и возвращает его технический результат.
-Повторное сообщение для уже записанной неудачи пропускает HTTP и продолжает
-retry. Запись результата не атомарна с HTTP-запросом; получатель должен
-обрабатывать дубли по `event_id`.
+An HTTP 2xx response means success. A timeout, network error, or any other status
+routes the message through the broker retry path. The webhook adapter makes no
+business decisions; it performs the HTTP request and returns its technical
+result. When a repeated message corresponds to a recorded failure, the worker
+skips the HTTP request and continues the retry path. Recording the result is not
+atomic with the HTTP request, so the receiver should deduplicate by `event_id`.
 
-## Точки подмены в тестах
+## Test substitution points
 
-Тестам разрешено подменять только внешние границы:
+Tests may replace only external boundaries:
 
-- gateway outcome;
-- HTTP-поведение webhook endpoint;
-- время/задержки retry;
-- RabbitMQ или PostgreSQL в тестах меньшего уровня.
+- gateway outcomes;
+- webhook endpoint HTTP behavior;
+- retry timing and delays;
+- RabbitMQ or PostgreSQL in lower-level tests.
 
-Интеграционные тесты запускают реальные PostgreSQL и RabbitMQ. Они не должны
-подменять repository или broker в сценариях, проверяющих outbox, ACK, retry и DLQ.
+Integration tests use real PostgreSQL and RabbitMQ. They must not replace the
+repository or broker in scenarios that verify the outbox, ACK, retries, and DLQ.

@@ -1,51 +1,51 @@
-# Спецификация
+# Specification
 
-## Назначение
+## Purpose
 
-Сервис принимает запрос на платёж, асинхронно обрабатывает его через эмулятор
-платёжного шлюза и отправляет итог на URL клиента. Публичный API защищён одним
-статическим `X-API-Key`.
+The service accepts a payment request, processes it asynchronously through a
+payment gateway emulator, and sends the result to the client's URL. The public
+API is protected by one static `X-API-Key`.
 
-Цель — показать FastAPI, асинхронную работу с PostgreSQL, transactional outbox,
-RabbitMQ/FastStream, идемпотентность, retry, DLQ и Docker Compose.
+The project demonstrates FastAPI, asynchronous PostgreSQL access, a transactional
+outbox, RabbitMQ/FastStream, idempotency, retries, a DLQ, and Docker Compose.
 
-## Границы
+## Scope
 
-В scope входят `pending`, `succeeded`, `failed`, webhook, broker retry и DLQ.
-Система не реализует регистрацию, аккаунты, роли, отмену платежа, возвраты,
-Celery, Redis и Kubernetes.
+The scope includes `pending`, `succeeded`, and `failed` payment states, webhooks,
+broker retries, and a DLQ. The system does not implement registration, accounts,
+roles, payment cancellation, refunds, Celery, Redis, or Kubernetes.
 
-Gateway — внутренний компонент worker, а не отдельный контейнер. Он нужен только
-для эмуляции внешней интеграции. В локальном стенде webhook-sink представляет
-систему клиента и принимает исходящие уведомления.
+The gateway is an internal worker component, not a separate container. It only
+emulates an external integration. In the local setup, `webhook-sink` represents
+the client's system and receives outgoing notifications.
 
-## Публичный API
+## Public API
 
-Все endpoint'ы требуют заголовок `X-API-Key`. Отсутствующий или неверный ключ
-даёт `401 Unauthorized`.
+Every endpoint requires the `X-API-Key` header. A missing or invalid key returns
+`401 Unauthorized`.
 
-### Создание платежа
+### Create a payment
 
 `POST /api/v1/payments`
 
-Обязательный заголовок: `Idempotency-Key`.
+Required header: `Idempotency-Key`.
 
-Тело:
+Request body:
 
 ```json
 {
   "amount": "1250.00",
   "currency": "RUB",
-  "description": "Оплата заказа #42",
+  "description": "Order #42 payment",
   "metadata": {"order_id": "42"},
   "webhook_url": "http://webhook-sink:8080/callbacks/payments"
 }
 ```
 
-`amount` — положительный `Decimal`, `currency` — `RUB`, `USD` или `EUR`.
-Неизвестные верхнеуровневые поля запрещены и дают `422`.
+`amount` is a positive `Decimal`; `currency` is one of `RUB`, `USD`, or `EUR`.
+Unknown top-level fields are rejected with `422`.
 
-Успешный новый запрос возвращает `202 Accepted`:
+A successful new request returns `202 Accepted`:
 
 ```json
 {
@@ -55,62 +55,64 @@ Gateway — внутренний компонент worker, а не отдель
 }
 ```
 
-### Получение платежа
+### Get a payment
 
-`GET /api/v1/payments/{payment_id}` возвращает публичные данные платежа,
-его статус и даты. Несуществующий идентификатор даёт `404 Not Found`.
+`GET /api/v1/payments/{payment_id}` returns public payment data, its status, and
+timestamps. An unknown ID returns `404 Not Found`.
 
-## Идемпотентность создания
+## Creation idempotency
 
-`idempotency_key` имеет уникальное ограничение в PostgreSQL. При новом ключе API
-в одной транзакции создаёт payment и одну outbox-запись.
+`idempotency_key` has a unique constraint in PostgreSQL. For a new key, the API
+creates the payment and one outbox record in the same transaction.
 
-При повторном ключе сервис загружает существующий payment и структурно сравнивает
-все значимые входные поля: amount, currency, description, metadata и webhook URL.
+For a repeated key, the service loads the existing payment and structurally
+compares all significant input fields: amount, currency, description, metadata,
+and webhook URL.
 
-- Совпавшие поля: возвращается исходный payment без новой outbox-записи.
-- Отличающиеся поля: `409 Conflict`.
+- If the fields match, the original payment is returned without creating another
+  outbox record.
+- If any field differs, the service returns `409 Conflict`.
 
-Идемпотентность разрешается уникальным ограничением БД, а не предварительной
-проверкой в приложении. Это закрывает два одновременных POST с одним ключом.
+The database unique constraint, rather than an application-level pre-check,
+arbitrates idempotency and handles two concurrent POST requests with the same key.
 
-## Данные
+## Data
 
-В задании достаточно двух таблиц.
+Two tables are sufficient for the assignment.
 
-### payments
+### `payments`
 
-| Поле | Назначение |
+| Field | Purpose |
 | --- | --- |
-| `id` | UUID платежа и публичный `payment_id`. |
-| `amount`, `currency`, `description`, `metadata` | Неизменяемый снимок входного платежа. |
-| `status` | `pending`, `succeeded` или `failed`. |
-| `idempotency_key` | Уникальный ключ создания. |
-| `webhook_url` | URL обратного уведомления. |
-| `created_at`, `processed_at` | Время создания и получения окончательного итога gateway. |
-| `webhook_attempts` | Число завершённых попыток POST, результат которых записан в БД. |
-| `last_recorded_webhook_attempt` | Номер последней broker-попытки с записанным результатом webhook; используется для дедупликации. |
-| `webhook_delivered_at` | Время успешного ответа webhook endpoint. |
-| `webhook_delivery_exhausted_at` | Время исчерпания трёх попыток, если это произошло. |
-| `last_error` | Санитизированное техническое описание последней ошибки. |
+| `id` | Payment UUID and public `payment_id`. |
+| `amount`, `currency`, `description`, `metadata` | Immutable snapshot of the payment request. |
+| `status` | `pending`, `succeeded`, or `failed`. |
+| `idempotency_key` | Unique creation key. |
+| `webhook_url` | Callback URL. |
+| `created_at`, `processed_at` | Creation time and time when the gateway result became final. |
+| `webhook_attempts` | Number of completed POST attempts whose results were recorded in the database. |
+| `last_recorded_webhook_attempt` | Broker attempt number for the most recently recorded webhook result; used for deduplication. |
+| `webhook_delivered_at` | Time when the webhook endpoint returned a successful response. |
+| `webhook_delivery_exhausted_at` | Time when all three attempts were exhausted, if applicable. |
+| `last_error` | Sanitized technical description of the most recent error. |
 
-### outbox
+### `outbox`
 
-| Поле | Назначение |
+| Field | Purpose |
 | --- | --- |
-| `id` | UUID события (`event_id`). |
-| `payment_id` | Внешний ключ на payment. |
-| `event_type`, `event_version` | Тип `payment.created` и версия контракта. |
-| `payload` | Неизменяемый JSON-снимок входных данных платежа. |
-| `status` | `pending`, `processing` или `published`. |
-| `publish_attempts`, `published_at`, `created_at` | Состояние relay. |
-| `claim_token`, `lease_expires_at` | Владение текущим захватом relay и срок этого захвата; заполнены только в `processing`. |
-| `last_error` | Санитизированная причина последней известной ошибки публикации. |
+| `id` | Event UUID (`event_id`). |
+| `payment_id` | Foreign key to the payment. |
+| `event_type`, `event_version` | Event type `payment.created` and contract version. |
+| `payload` | Immutable JSON snapshot of the payment request data. |
+| `status` | `pending`, `processing`, or `published`. |
+| `publish_attempts`, `published_at`, `created_at` | Relay state. |
+| `claim_token`, `lease_expires_at` | Ownership and expiry for the current relay claim; set only while `processing`. |
+| `last_error` | Sanitized reason for the last known publish failure. |
 
-Outbox имеет уникальность по `(payment_id, event_type)`, поэтому у одного
-платежа появляется одно событие создания.
+The outbox has a unique constraint on `(payment_id, event_type)`, so each payment
+has one creation event.
 
-Состояния outbox образуют короткую state machine:
+Outbox states form a small state machine:
 
 ```text
 pending -- claim --> processing -- broker confirm --> published
@@ -118,127 +120,134 @@ pending -- claim --> processing -- broker confirm --> published
                          +-- known publish failure --> pending
 ```
 
-`processing` означает, что relay уже сохранил захват события и выполняет
-публикацию. Это не сам PostgreSQL row lock: lock нужен только внутри короткой
-claim-транзакции. Незавершённый `processing` будет восстановлен после истечения
-lease захвата.
+`processing` means that the relay has persisted a claim and is attempting to
+publish the event. It is not the PostgreSQL row lock itself: the lock is only
+held during the short claim transaction. An unfinished `processing` claim can
+be recovered after its lease expires.
 
-## Событие
+## Event
 
-`payment.created` содержит `event_id`, `payment_id`, тип, версию и неизменяемые
-данные платежа: amount, currency, description, metadata, webhook URL и время
-создания. Он не содержит меняющийся `status`.
+The `payment.created` event contains `event_id`, `payment_id`, type, version,
+and immutable payment data: amount, currency, description, metadata, webhook URL,
+and creation time. It does not contain the mutable `status`.
 
-Worker использует payload как входные данные gateway и webhook, но сверяется с
-PostgreSQL перед работой: база остаётся источником текущего статуса и состояния
-доставки webhook.
+The worker uses the payload as input for the gateway and webhook, but checks
+PostgreSQL before processing. The database remains the source of truth for the
+current status and webhook delivery state.
 
-## Обработка платежа
+## Payment processing
 
-Обычный gateway emulator ждёт от двух до пяти секунд и выдаёт 90% `succeeded`
-и 10% подтверждённых бизнес-отказов `failed`. Это выбранная трактовка ТЗ;
-управляемые технические ошибки используются только
-в тестах и demo-сценариях.
+The regular gateway emulator waits between two and five seconds and returns
+`succeeded` 90% of the time and a confirmed business decline (`failed`) 10% of
+the time. This is the selected interpretation of the assignment; controllable
+technical failures are used only in tests and demo scenarios.
 
-Worker обрабатывает событие так:
+The worker processes an event as follows:
 
-1. Читает payment state из БД.
-2. Если итог gateway уже известен, пропускает gateway и продолжает только
-   недоставленный webhook.
-3. Если payment `pending`, вызывает gateway emulator и сохраняет `succeeded`
-   либо `failed` вместе с `processed_at`.
-4. Отправляет webhook с итогом платежа.
-5. При успешном webhook сохраняет `webhook_delivered_at` и подтверждает
-   сообщение RabbitMQ.
+1. Read the payment state from the database.
+2. If the gateway result is already final, skip the gateway and only continue
+   with an undelivered webhook.
+3. If the payment is `pending`, call the gateway emulator and persist
+   `succeeded` or `failed` together with `processed_at`.
+4. Send the webhook with the payment result.
+5. On webhook success, persist `webhook_delivered_at` and acknowledge the
+   RabbitMQ message.
 
-Один consumer запускается с одной активной обработкой. Это ограничивает обычную
-параллельную гонку. При аварии после внешнего вызова gateway, но до записи
-результата, результат может быть неизвестен и событие будет доставлено снова.
-Эмулятор обязан быть воспроизводимым по `payment_id`; реальный provider потребовал
-бы собственного идемпотентного ключа и reconciliation. Сервис не заявляет
-exactly-once вызов gateway.
+One consumer runs with one active handler at a time. This limits ordinary
+concurrent races. If the process fails after the external gateway call but
+before persisting its result, the outcome may be unknown and the event may be
+delivered again. The emulator must be deterministic for a given `payment_id`; a
+real provider would need its own idempotency key and reconciliation. The service
+does not claim exactly-once gateway calls.
 
 ## Webhook
 
-Worker делает `POST` на `webhook_url`, переданный при создании платежа. Успехом
-считается любой HTTP 2xx. Payload содержит минимум: `payment_id`, `status`,
-`amount`, `currency`, `metadata`, `processed_at` и `event_id`.
+The worker sends a `POST` to the `webhook_url` supplied when the payment was
+created. Any HTTP 2xx response counts as success. The payload contains at least
+`payment_id`, `status`, `amount`, `currency`, `metadata`, `processed_at`, and
+`event_id`.
 
-При сетевой ошибке, таймауте или не-2xx webhook считается недоставленным.
-Итог payment не меняется: webhook может не доставиться как после `succeeded`,
-так и после `failed`.
+A network error, timeout, or non-2xx response means the webhook was not delivered.
+The payment result does not change: a webhook can fail after either `succeeded`
+or `failed`.
 
-## Retry и DLQ
+## Retries and DLQ
 
-Три попытки означают начальную обработку сообщения и две повторные, с общим
-бюджетом для gateway и webhook. Если gateway временно ошибался, фактических POST
-может быть меньше трёх. Задержки: 1 и 2 секунды.
-RabbitMQ реализует задержки через retry-очереди с TTL:
+Three attempts consist of the initial message handling and two retries, with a
+shared budget for gateway and webhook processing. If the gateway has temporary
+errors, fewer than three POST requests may occur. Retry delays are one and two
+seconds. RabbitMQ implements the delays using TTL retry queues:
 
-| Попытка завершилась ошибкой | Действие |
+| Failed attempt | Action |
 | --- | --- |
-| Первая | Публикация в `payments.retry.1`, TTL 1 секунда. |
-| Вторая | Публикация в `payments.retry.2`, TTL 2 секунды. |
-| Третья | Маршрутизация в `payments.dlq`. |
+| First | Publish to `payments.retry.1` with a 1-second TTL. |
+| Second | Publish to `payments.retry.2` with a 2-second TTL. |
+| Third | Route to `payments.dlq`. |
 
-Перед ACK исходного сообщения worker получает publisher confirm для передачи в
-retry-очередь. Это не исключает дубль при падении между подтверждённой публикацией
-и ACK. Номер попытки передаётся в заголовке сообщения, а завершённые попытки
-webhook сохраняются в БД. При повторной доставке уже записанной попытки worker
-не отправляет webhook снова, но повторно передаёт событие в следующий retry:
-это также восстанавливает сбой между записью ошибки и публикацией retry.
-Падение после HTTP-запроса, но до записи результата, допускает повторный POST;
-при нескольких активных consumer возможны гонки. Получатель должен обрабатывать
-дубли по `event_id`. Exactly-once доставка webhook не гарантируется.
+Before acknowledging the original message, the worker waits for publisher
+confirmation that the retry message was accepted. A duplicate is still possible
+if the process fails between that confirmation and the ACK. The attempt number
+is carried in a message header, and completed webhook attempts are persisted in
+the database. When a redelivery repeats an attempt whose result is already
+recorded, the worker skips another webhook POST but republishes the event to the
+next retry queue. This also recovers a failure between recording the error and
+publishing the retry. A crash after the HTTP request but before recording its
+result can cause another POST; concurrent consumers can also race. The receiver
+should deduplicate by `event_id`. Exactly-once webhook delivery is not guaranteed.
 
-Подтверждённый бизнес-отказ gateway не ретраится. Техническая ошибка до известного
-результата gateway оставляет payment `pending`; после трёх попыток сообщение идёт
-в DLQ. При исчерпании попыток webhook payment остаётся `succeeded` или `failed`,
-а факт недоставки виден по полям payments и сообщению в DLQ.
-Для технических ошибок gateway устойчивого счётчика нет: дубли сообщений могут
-привести к дополнительным вызовам до финального результата.
-У записей, созданных до миграции разделения счётчика, `webhook_attempts` может
-содержать прежний номер broker-попытки: точное историческое число POST нельзя
-восстановить после ошибок gateway. Номер сохранён как marker дедупликации.
+A confirmed business decline from the gateway is not retried. A technical
+gateway error before a known result leaves the payment `pending`; after three
+attempts, the message goes to the DLQ. If webhook retries are exhausted, the
+payment remains `succeeded` or `failed`, and the undelivered state is visible in
+the payment fields and the DLQ message.
+
+Technical gateway errors do not have a durable counter: duplicate messages can
+cause additional calls until a final result is recorded. For records created
+before the counter-separation migration, `webhook_attempts` may contain the old
+broker attempt number. The exact historical number of POST requests cannot be
+reconstructed after gateway errors; the value is retained as a deduplication
+marker.
 
 ## Outbox relay
 
-API записывает payment и outbox event одной транзакцией, после чего возвращает
-`202`. Фоновый relay в API читает небольшие пачки `pending` записей с
-`FOR UPDATE SKIP LOCKED`, сохраняет для них `processing`, публикует
-persistent-сообщения в RabbitMQ и отмечает строку `published` только после
-publisher confirm и проверки маршрутизации.
+The API writes the payment and outbox event in one transaction, then returns
+`202`. A background relay in the API reads small batches of `pending` records
+using `FOR UPDATE SKIP LOCKED`, persists their `processing` state, publishes
+persistent messages to RabbitMQ, and marks each row `published` only after
+publisher confirmation and routing verification.
 
-Падение после публикации, но до отметки `published`, приводит к повторной
-публикации. Это ожидаемая at-least-once гарантия. Relay не удаляет `pending`
-события при недоступном брокере. API запускается независимо от соединения с
-RabbitMQ, relay повторяет подключение и работу после восстановления брокера.
-После каждого успешного прохода cleanup удаляет только `published` записи старше
-`APP_OUTBOX_RETENTION_DAYS` (по умолчанию 30 дней), не более
-`APP_OUTBOX_CLEANUP_BATCH_SIZE` (по умолчанию 100) за проход.
+A crash after publication but before marking the row `published` causes a
+duplicate publish. This is the expected at-least-once guarantee. The relay does
+not delete `pending` events when the broker is unavailable. The API starts
+independently of the RabbitMQ connection; the relay retries the connection and
+resumes after the broker recovers. After each successful pass, cleanup deletes
+only `published` records older than `APP_OUTBOX_RETENTION_DAYS` (30 days by
+default), and removes no more than `APP_OUTBOX_CLEANUP_BATCH_SIZE` (100 by default)
+per pass.
 
-При graceful shutdown relay сначала прекращает захватывать новые строки и
-завершает уже начатую публикацию в пределах ограниченного времени. Он ставит
-`published` только после broker confirm. Если срок вышел или процесс отменён,
-неподтверждённая строка остаётся `processing` до истечения lease, после чего
-следующий relay сможет забрать её снова. Брокер мог успеть принять такое
-сообщение до отмены, поэтому дубль допустим и должен быть безопасно обработан
+During graceful shutdown, the relay stops claiming new rows and completes
+in-flight publishes within a bounded time. It marks a row `published` only after
+publisher confirmation. If the deadline expires or the process is cancelled,
+the unconfirmed row remains `processing` until its lease expires, after which a
+new relay can claim it. RabbitMQ may have accepted the message before
+cancellation, so a duplicate is possible and must be handled safely by the
 worker.
 
-Приложение пишет операционные события Loguru в stdout: принятие платежа,
-публикацию outbox, итог gateway, доставку webhook, retry и DLQ. В этих сообщениях
-нет API key, idempotency key, webhook URL, тела webhook или metadata.
+The application writes operational Loguru events to stdout: payment acceptance,
+outbox publication, gateway result, webhook delivery, retries, and DLQ routing.
+These logs do not contain API keys, idempotency keys, webhook URLs, webhook
+bodies, or metadata.
 
-## Проверяемые сценарии
+## Scenarios to verify
 
-1. Новый платёж создаёт один payment и один outbox event.
-2. Повторный идентичный POST не создаёт второе событие.
-3. Повторный ключ с изменённым полем даёт `409`.
-4. Успешный gateway переводит payment в `succeeded` и доставляет webhook.
-5. Подтверждённый отказ gateway переводит payment в `failed` и всё равно шлёт webhook.
-6. Сбой webhook дважды, затем успех, даёт три отправки и успешную доставку.
-7. Три ошибки webhook оставляют итог payment, фиксируют exhaustion и кладут
-   сообщение в DLQ.
-8. Падение relay после publish создаёт дубль, который не запускает gateway
-   повторно для уже финального payment.
-9. Сбой worker до ACK приводит к redelivery без потери сообщения.
+1. A new payment creates one payment row and one outbox event.
+2. An identical repeated POST does not create a second event.
+3. Reusing a key with a changed field returns `409`.
+4. Gateway success sets the payment to `succeeded` and delivers a webhook.
+5. A confirmed gateway decline sets the payment to `failed` and still sends a webhook.
+6. Two webhook failures followed by success produce three attempts and delivery.
+7. Three webhook failures preserve the payment result, record exhaustion, and
+   route the message to the DLQ.
+8. A relay crash after publishing creates a duplicate that does not call the
+   gateway again for an already-final payment.
+9. A worker crash before ACK causes redelivery without losing the message.

@@ -1,89 +1,90 @@
-# Тест-кейсы
+# Test cases
 
-Этот документ фиксирует ожидаемое поведение до автоматизации. Тесты пишутся по
-этим кейсам; изменение ожидания требует изменения спецификации или исправления
-ошибки в самом кейсе.
+This document records expected behavior before automation. Tests are written
+against these cases; changing an expectation requires changing the specification
+or correcting an error in the case itself.
 
-## Условия тестового стенда
+## Test environment
 
-- PostgreSQL и RabbitMQ поднимаются в Docker Compose.
-- У API задан известный тестовый `X-API-Key`.
-- Gateway emulator в тестах управляемый: можно получить success, подтверждённый
-  decline или временную техническую ошибку без случайности и ожидания 2–5 секунд.
-- Webhook-sink сохраняет принятые callbacks и может отвечать заданной
-  последовательностью HTTP-статусов или имитировать таймаут.
-- Worker запускается одним активным consumer с manual ACK.
+- PostgreSQL and RabbitMQ run in Docker Compose.
+- The API uses a known test `X-API-Key`.
+- The gateway emulator is controllable in tests: it can return success, a
+  confirmed decline, or a temporary technical error without randomness or the
+  usual 2–5 second delay.
+- The webhook sink stores received callbacks and can return a configured sequence
+  of HTTP status codes or simulate a timeout.
+- The worker runs one active consumer with manual ACK.
 
-## API и валидация
+## API and validation
 
-| ID | Сценарий | Действия | Ожидаемый результат |
+| ID | Scenario | Actions | Expected result |
 | --- | --- | --- | --- |
-| API-01 | Создание платежа | Отправить валидный POST с обоими ключами. | `202`, `payment_id`, `pending`, `created_at`; в БД один payment и один pending outbox event. |
-| API-02 | Получение платежа | Вызвать GET для созданного payment. | `200` и публичные поля payment. |
-| API-03 | Несуществующий payment | Вызвать GET с неизвестным UUID. | `404`. |
-| API-04 | Отсутствующий ключ API | Вызвать POST и GET без `X-API-Key`. | `401`; POST не меняет БД. |
-| API-05 | Неверный ключ API | Вызвать POST с другим `X-API-Key`. | `401`; POST не меняет БД. |
-| API-06 | Неверное тело | Передать нулевую/отрицательную сумму, неизвестную валюту или невалидный URL. | `422`; payment и outbox event не создаются. |
-| API-07 | Неизвестное поле | Добавить неизвестное верхнеуровневое поле в POST body. | `422`; лишнее поле не игнорируется. |
+| API-01 | Create payment | Send a valid POST with both keys. | `202`, `payment_id`, `pending`, and `created_at`; one payment and one pending outbox event in the database. |
+| API-02 | Get payment | GET a created payment. | `200` and public payment fields. |
+| API-03 | Unknown payment | GET an unknown UUID. | `404`. |
+| API-04 | Missing API key | Send POST and GET without `X-API-Key`. | `401`; POST does not change the database. |
+| API-05 | Invalid API key | Send POST with a different `X-API-Key`. | `401`; POST does not change the database. |
+| API-06 | Invalid body | Send a zero/negative amount, unknown currency, or invalid URL. | `422`; no payment or outbox event is created. |
+| API-07 | Unknown field | Add an unknown top-level field to the POST body. | `422`; the extra field is not ignored. |
 
-## Идемпотентность
+## Idempotency
 
-| ID | Сценарий | Действия | Ожидаемый результат |
+| ID | Scenario | Actions | Expected result |
 | --- | --- | --- | --- |
-| IDEM-01 | Идентичный повтор | Дважды отправить один POST с одинаковым ключом и значимыми полями. | Оба ответа указывают на один `payment_id`; в БД один payment и один outbox event. |
-| IDEM-02 | Другое значимое поле | Повторить ключ, изменив amount, currency, description, metadata или webhook URL. | `409`; существующий payment не меняется. |
-| IDEM-03 | Конкурентный повтор | Одновременно отправить два идентичных POST с одним ключом. | Создан ровно один payment и один outbox event; оба ответа ссылаются на него. |
-| IDEM-04 | Конкурентный конфликт | Одновременно отправить один ключ с двумя разными телами. | Создан ровно один payment; второй запрос получает `409`. |
+| IDEM-01 | Identical retry | Send the same POST twice with the same key and significant fields. | Both responses refer to one `payment_id`; the database contains one payment and one outbox event. |
+| IDEM-02 | Changed significant field | Reuse a key while changing amount, currency, description, metadata, or webhook URL. | `409`; the existing payment is unchanged. |
+| IDEM-03 | Concurrent identical requests | Send two identical POST requests concurrently with the same key. | Exactly one payment and one outbox event are created; both responses refer to that payment. |
+| IDEM-04 | Concurrent conflicting requests | Send two different request bodies concurrently with the same key. | Exactly one payment is created; the other request returns `409`. |
 
 ## Outbox relay
 
-| ID | Сценарий | Действия | Ожидаемый результат |
+| ID | Scenario | Actions | Expected result |
 | --- | --- | --- | --- |
-| OUT-01 | Публикация нового события | Создать payment, остановить worker и запустить relay при доступном RabbitMQ. | В `payments.new` появляется одно событие; outbox отмечен `published` после broker confirm. |
-| OUT-02 | Брокер временно недоступен | Создать payment при недоступном RabbitMQ, затем восстановить broker. | API доступен; outbox остаётся `pending` или временно `processing` до восстановления lease и затем публикуется; событие не удаляется. |
-| OUT-03 | Дубль после аварии relay | Имитировать publish в broker и падение до отметки outbox `published`; перезапустить relay. | Событие опубликовано повторно; consumer безопасно переносит дубль. |
-| OUT-04 | Конкурентный relay | Запустить два экземпляра relay на нескольких pending событиях. | Каждая строка захватывается одним relay за один проход; не возникает одновременной публикации одной строки. |
-| OUT-05 | Штатная остановка relay | Начать публикацию, отправить приложению shutdown до broker confirm и затем перезапустить relay. | Не завершившаяся строка остаётся `processing` до истечения lease; при возможном дубле worker не запускает gateway повторно для финального payment. |
+| OUT-01 | Publish new event | Create a payment, stop the worker, and run the relay while RabbitMQ is available. | One event appears in `payments.new`; the outbox row is marked `published` after broker confirmation. |
+| OUT-02 | Broker temporarily unavailable | Create a payment while RabbitMQ is unavailable, then restore the broker. | The API stays available; the outbox remains `pending` or temporarily `processing` until its lease recovers, then gets published; the event is not lost. |
+| OUT-03 | Duplicate after relay crash | Simulate a publish followed by a crash before marking the outbox row `published`; restart the relay. | The event is published again; the consumer handles the duplicate safely. |
+| OUT-04 | Concurrent relays | Run two relay instances with multiple pending events. | Each row is claimed by one relay per pass; a row is not published concurrently by both. |
+| OUT-05 | Graceful relay shutdown | Start a publish, request application shutdown before broker confirmation, and then restart. | The unfinished row stays `processing` until its lease expires; if a duplicate occurs, the worker does not call the gateway again for a final payment. |
 
-## Gateway и статус платежа
+## Gateway and payment status
 
-| ID | Сценарий | Действия | Ожидаемый результат |
+| ID | Scenario | Actions | Expected result |
 | --- | --- | --- | --- |
-| PAY-01 | Успех gateway | Направить event в worker с gateway success. | Payment становится `succeeded`, установлен `processed_at`, затем отправлен webhook. |
-| PAY-02 | Подтверждённый отказ | Направить event в worker с gateway decline. | Payment становится `failed`, установлен `processed_at`, затем отправлен webhook. |
-| PAY-03 | Дубликат финального event | Повторно доставить event после успешного gateway и доставленного webhook. | Gateway и webhook не вызываются повторно; сообщение подтверждается. |
-| PAY-04 | Повтор после сохранённого итога | Payment уже финальный, но webhook ещё не доставлен; доставить event. | Gateway не вызывается; worker пытается доставить только webhook. |
-| PAY-05 | Неизвестный результат gateway | Gateway возвращает временную ошибку до известного исхода. | Payment остаётся `pending`; сообщение уходит в retry, а не в webhook. |
-| PAY-06 | Падение до ACK | Имитировать остановку worker после сохранения результата, но до ACK. | RabbitMQ redeliver'ит event; worker не вызывает gateway второй раз для финального payment. |
+| PAY-01 | Gateway success | Deliver an event to the worker with a successful gateway outcome. | Payment becomes `succeeded`, `processed_at` is set, then the webhook is sent. |
+| PAY-02 | Confirmed decline | Deliver an event to the worker with a gateway decline. | Payment becomes `failed`, `processed_at` is set, then the webhook is sent. |
+| PAY-03 | Duplicate final event | Redeliver an event after gateway success and webhook delivery. | Gateway and webhook are not called again; the message is acknowledged. |
+| PAY-04 | Retry after result persisted | Payment is final but its webhook has not been delivered; redeliver the event. | The gateway is not called; the worker only attempts the webhook. |
+| PAY-05 | Unknown gateway result | Gateway returns a temporary error before an outcome is known. | Payment remains `pending`; the message is retried rather than sent to the webhook. |
+| PAY-06 | Crash before ACK | Stop the worker after persisting the result but before ACK. | RabbitMQ redelivers the event; the worker does not call the gateway again for a final payment. |
 
-## Webhook, retry и DLQ
+## Webhook, retries, and DLQ
 
-Три попытки означают исходную обработку сообщения и две повторные; бюджет общий
-для gateway и webhook. После временных ошибок gateway POST может быть меньше
-трёх. Задержки составляют одну и две секунды.
+Three attempts mean the initial handling plus two retries; the gateway and webhook
+share the same attempt budget. Temporary gateway errors can reduce the number of
+actual POST requests. Delays are one and two seconds.
 
-| ID | Сценарий | Действия | Ожидаемый результат |
+| ID | Scenario | Actions | Expected result |
 | --- | --- | --- | --- |
-| WH-01 | Успешный webhook | Sink возвращает `204`. | Один POST; установлено `webhook_delivered_at`; сообщение ACK. |
-| WH-02 | Восстановление webhook | Sink возвращает `500`, `500`, затем `200`. | Три POST с retry 1s и 2s; payment сохраняет финальный status; webhook отмечен доставленным; DLQ пуст. |
-| WH-03 | Исчерпание попыток | Sink трижды возвращает `500` или timeout. | Три POST; payment сохраняет финальный status; установлено `webhook_delivery_exhausted_at`; сообщение в `payments.dlq`. |
-| WH-04 | Ошибка после gateway failed | Gateway возвращает decline, sink трижды даёт ошибку. | Payment остаётся `failed`, а сообщение попадает в DLQ из-за webhook, не из-за gateway. |
-| WH-05 | Техническая ошибка gateway | Gateway трижды возвращает временную ошибку. | Payment остаётся `pending`; после третьей попытки сообщение попадает в DLQ. |
-| WH-06 | Дубль retry-публикации | Имитировать падение между broker confirm retry-сообщения и ACK исходного delivery. | Уже записанная попытка webhook не выполняется снова, а её retry может быть опубликован повторно; gateway не вызывается после финального итога. Падение после POST до записи допускает повторный POST; технические ошибки gateway не имеют устойчивого счётчика. |
-| WH-07 | Gateway ошибки до webhook | Дважды получить временную ошибку gateway, затем success и HTTP 204. | Три обработки сообщения, один POST и `webhook_attempts = 1`; marker broker-попытки равен 3. |
+| WH-01 | Successful webhook | Sink returns `204`. | One POST; `webhook_delivered_at` is set; message is ACKed. |
+| WH-02 | Webhook recovers | Sink returns `500`, `500`, then `200`. | Three POST requests with 1s and 2s delays; payment retains its final status; webhook is marked delivered; DLQ stays empty. |
+| WH-03 | Attempts exhausted | Sink returns `500` or times out three times. | Three POST requests; payment retains its final status; `webhook_delivery_exhausted_at` is set; message appears in `payments.dlq`. |
+| WH-04 | Webhook failure after gateway decline | Gateway declines and the sink fails three times. | Payment remains `failed`; the message goes to the DLQ because of webhook failure, not gateway failure. |
+| WH-05 | Gateway technical errors | Gateway returns a temporary error three times. | Payment remains `pending`; the message goes to the DLQ after the third attempt. |
+| WH-06 | Duplicate retry publish | Simulate a crash between retry publisher confirmation and ACK of the original delivery. | A webhook attempt whose result was already recorded is not sent again, though its retry can be published more than once; the gateway is not called after the final result. A crash after POST but before recording the result can repeat the POST; gateway technical errors do not have a durable counter. |
+| WH-07 | Gateway errors before webhook | Return two temporary gateway errors, then success and HTTP 204. | Three message attempts, one POST, and `webhook_attempts = 1`; broker attempt marker is 3. |
 
-## Миграции и окружение
+## Migrations and environment
 
-| ID | Сценарий | Действия | Ожидаемый результат |
+| ID | Scenario | Actions | Expected result |
 | --- | --- | --- | --- |
-| ENV-01 | Чистая миграция | Поднять пустую PostgreSQL и выполнить Alembic upgrade. | Созданы `payments`, `outbox`, индексы, уникальные ограничения и внешние ключи. |
-| ENV-02 | Повторная миграция | Второй раз выполнить Alembic upgrade. | Команда завершается успешно без изменения схемы. |
-| ENV-03 | Compose smoke test | Поднять основной Compose после миграций. | PostgreSQL, RabbitMQ, API и worker становятся healthcheck-ready; API принимает авторизованный запрос. |
-| ENV-04 | Demo-профиль | Поднять Compose с webhook-sink. | Sink доступен из worker по имени сервиса и виден с хоста через проброшенный порт. |
+| ENV-01 | Fresh migration | Start an empty PostgreSQL database and run Alembic upgrade. | Creates `payments`, `outbox`, indexes, unique constraints, and foreign keys. |
+| ENV-02 | Repeated migration | Run Alembic upgrade a second time. | Command succeeds without changing the schema. |
+| ENV-03 | Compose smoke test | Start the main Compose stack after migrations. | PostgreSQL, RabbitMQ, API, and worker become healthy; the API accepts an authorized request. |
+| ENV-04 | Demo profile | Start Compose with the webhook sink. | The sink is reachable from the worker by service name and from the host through its published port. |
 
-## Приоритет автоматизации
+## Automation priority
 
-Сначала автоматизируются API-01, API-04, IDEM-01, IDEM-02, IDEM-03, OUT-01,
-OUT-02, PAY-01, PAY-02, PAY-03, WH-02 и WH-03. Они закрывают все явные критерии
-ТЗ. Сценарии аварийных границ добавляются сразу после появления соответствующей
-инфраструктуры.
+Automate API-01, API-04, IDEM-01, IDEM-02, IDEM-03, OUT-01, OUT-02, PAY-01,
+PAY-02, PAY-03, WH-02, and WH-03 first. These cover all explicit assignment
+requirements. Failure-boundary scenarios should be added as soon as the relevant
+infrastructure exists.

@@ -1,23 +1,25 @@
-# ADR 002: payment state как устойчивый источник идемпотентности consumer
+# ADR 002: Payment state as the durable source of consumer idempotency
 
-## Статус
+## Status
 
-Принято.
+Accepted.
 
-## Контекст
+## Context
 
-RabbitMQ не ведёт вечный реестр обработанных `event_id`. Relay может повторно
-опубликовать событие, а broker — redeliver не подтверждённую доставку.
+RabbitMQ does not keep a permanent registry of processed `event_id` values. The
+relay may publish an event more than once, and the broker may redeliver a message
+that was not acknowledged.
 
-## Решение
+## Decision
 
-Event содержит стабильный `event_id` для трассировки, но worker принимает решение
-по payment state в PostgreSQL. Для финального payment с доставленным webhook
-повтор — no-op. Для финального payment без доставленного webhook worker повторяет
-только webhook.
+An event contains a stable `event_id` for tracing, but the worker makes its
+decision using the payment state in PostgreSQL. A repeated event for a final
+payment whose webhook was delivered is a no-op. For a final payment whose
+webhook is still undelivered, the worker retries only the webhook.
 
-## Последствия
+## Consequences
 
-Отдельная таблица processed events не нужна. Это не даёт exactly-once вызов
-реального gateway после падения между внешним вызовом и записью БД; такой provider
-в будущем должен принимать собственный идемпотентный ключ.
+A separate processed-events table is unnecessary. This does not guarantee an
+exactly-once call to a real gateway if the process fails between the external
+call and persisting the result; a future provider integration must accept its
+own idempotency key.

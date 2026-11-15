@@ -1,25 +1,25 @@
-# Архитектура
+# Architecture
 
-## Компоненты
+## Components
 
 ```mermaid
 flowchart LR
-    Client[curl / backend магазина] -->|POST payment\nX-API-Key and Idempotency-Key| API
+    Client[curl / merchant backend] -->|POST payment\nX-API-Key and Idempotency-Key| API
     subgraph ApiContainer[api container]
         direction TB
         API[FastAPI API]
         Relay[Outbox relay\nbackground task]
     end
-    API -->|создаёт payment and outbox\nin one transaction| DB[(PostgreSQL\npayments and outbox)]
+    API -->|store payment and outbox\nin one transaction| DB[(PostgreSQL\npayments and outbox)]
     Relay -->|claim pending outbox rows| DB
     Relay -->|publish event| Exchange{{RabbitMQ\npayments.exchange}}
     Exchange -->|publisher confirm| Relay
     Relay -->|mark outbox published| DB
     Exchange --> Work[payments.new]
-    Work -->|delivery| Worker[Один FastStream worker]
-    Worker -->|payment state + результат| DB
-    Worker --> Gateway[Внутренний gateway emulator]
-    Worker -->|POST результата| Hook[Webhook клиента]
+    Work -->|delivery| Worker[Single FastStream worker]
+    Worker -->|payment state + result| DB
+    Worker --> Gateway[Internal gateway emulator]
+    Worker -->|POST result| Hook[Client webhook]
     Worker --> Retry1[payments.retry.1\nTTL 1s]
     Retry1 --> Work
     Worker --> Retry2[payments.retry.2\nTTL 2s]
@@ -27,33 +27,34 @@ flowchart LR
     Worker --> DLQ[payments.dlq]
 ```
 
-Relay — отдельный **логический компонент**, но не отдельный Compose-сервис: при
-старте `api`-контейнера FastAPI lifespan запускает один фоновый asyncio-цикл.
-HTTP-обработчик только записывает `payment` и `outbox` в транзакции и никогда не
-публикует сообщение в RabbitMQ сам. Relay периодически захватывает pending
-строки из PostgreSQL, публикует их и отмечает `published` только после broker
-confirm. Его можно вынести в самостоятельный процесс без изменения контракта с
-БД или RabbitMQ; для объёма тестового пока оставляем его внутри `api`-контейнера.
+The relay is a separate **logical component**, but not a separate Compose
+service. When the `api` container starts, the FastAPI lifespan launches one
+background asyncio loop. The HTTP handler only writes the payment and outbox row
+in a transaction; it never publishes directly to RabbitMQ. The relay periodically
+claims pending rows from PostgreSQL, publishes them, and marks them `published`
+only after broker confirmation. It could be moved to its own process without
+changing its database or RabbitMQ contracts; for this assignment, it remains in
+the `api` container.
 
-`webhook-sink` подключается как demo-сервис в Docker Compose. Он не участвует
-в обработке платежа: принимает callback и позволяет увидеть результат в логах
-или через диагностический endpoint.
+`webhook-sink` is included in Docker Compose as a demo service. It does not take
+part in payment processing: it receives callbacks and lets us inspect the result
+in logs or through a diagnostic endpoint.
 
-## Правило реализации портов
+## Port implementation rule
 
-Порты application-слоя определяются через `Protocol`. Каждый конкретный adapter,
-включая test double, **явно наследуется** от реализуемого порта и помечает его
-методы `@override`. Это даёт IDE и статическому анализатору возможность
-проверить имя и сигнатуру метода рядом с его объявлением, а не только в точке,
-где adapter передаётся в use case. Импорт порта в infrastructure — допустимая
-зависимость наружного слоя от внутреннего; скрывать базовый класс под
-`TYPE_CHECKING` нельзя, потому что он нужен Python при создании класса.
+Application-layer ports are defined with `Protocol`. Every concrete adapter,
+including test doubles, **explicitly inherits** from the port it implements and
+marks its methods with `@override`. This lets the IDE and static type checker
+verify method names and signatures where they are declared, rather than only
+where the adapter is passed to a use case. Infrastructure may import a port
+from the inner layer; hiding the base class under `TYPE_CHECKING` is not allowed,
+because Python needs it when creating the class.
 
-## Успешный путь
+## Successful path
 
 ```mermaid
 sequenceDiagram
-    participant C as Клиент
+    participant C as Client
     participant A as API
     participant L as Outbox relay
     participant P as PostgreSQL
@@ -80,7 +81,7 @@ sequenceDiagram
     W->>R: ACK
 ```
 
-## Ошибка webhook
+## Webhook failure
 
 ```mermaid
 sequenceDiagram
@@ -95,41 +96,43 @@ sequenceDiagram
     W->>R: Publish first retry
     R-->>W: Confirm publication
     W->>R: Acknowledge original event
-    R-->>R: Delay one second then route to main queue
+    R-->>R: Delay one second, then route to main queue
     R->>W: Deliver attempt two
     W->>H: Send webhook
     H-->>W: Return error
     W->>R: Publish second retry
     R-->>W: Confirm publication
     W->>R: Acknowledge original event
-    R-->>R: Delay two seconds then route to main queue
+    R-->>R: Delay two seconds, then route to main queue
     R->>W: Deliver attempt three
     W->>H: Send webhook
     H-->>W: Return error
     W->>P: Store exhausted delivery state
-    W->>R: Reject event to dead letter queue
+    W->>R: Reject event to dead-letter queue
 ```
 
-## Очереди и ответственность
+## Queues and responsibilities
 
-| Очередь | Назначение | Кто пишет | Кто читает |
+| Queue | Purpose | Publisher | Consumer |
 | --- | --- | --- | --- |
-| `payments.new` | Основная обработка payment event | Relay и retry-очереди через DLX | Worker |
-| `payments.retry.1` | Первая задержка, 1 секунда | Worker | RabbitMQ TTL/DLX |
-| `payments.retry.2` | Вторая задержка, 2 секунды | Worker | RabbitMQ TTL/DLX |
-| `payments.dlq` | Сообщения после третьей неудачи | RabbitMQ | Человек через Management UI |
+| `payments.new` | Main payment-event processing | Relay and retry queues through DLX | Worker |
+| `payments.retry.1` | First delay, one second | Worker | RabbitMQ TTL/DLX |
+| `payments.retry.2` | Second delay, two seconds | Worker | RabbitMQ TTL/DLX |
+| `payments.dlq` | Messages after the third failure | RabbitMQ | Operator through Management UI |
 
-Все рабочие очереди и сообщения durable/persistent. Worker использует manual ACK,
-чтобы RabbitMQ мог redeliver не подтверждённое при падении consumer сообщение.
-Publisher confirms подтверждают только приём сообщения брокером, а не завершение
-работы worker.
+All work queues and messages are durable/persistent. The worker uses manual ACK
+so RabbitMQ can redeliver a message that was not acknowledged before a consumer
+failure. Publisher confirms indicate that the broker accepted a message, not
+that the worker completed it.
 
-При недоступности RabbitMQ API продолжает принимать платежи в PostgreSQL, а relay
-повторяет подключение. Обработанная ошибка публикации возвращает строку в pending;
-при отмене во время публикации она остаётся processing до истечения lease. Relay
-ограниченно удаляет только старые опубликованные записи после успешных проходов.
+When RabbitMQ is unavailable, the API continues accepting payments into
+PostgreSQL and the relay retries its connection. A handled publish error returns
+the row to `pending`; cancellation during publication leaves it `processing`
+until the lease expires. After successful passes, the relay deletes only old
+published rows in bounded batches.
 
-Сохранённая неудача webhook не вызывает повторный POST для той же попытки при
-redelivery, но retry может быть опубликован повторно. Сбой между POST и записью
-результата допускает повторный POST. Технические ошибки gateway не имеют
-устойчивого счётчика; точно однократная обработка не заявляется.
+A recorded webhook failure does not cause another POST for the same attempt on
+redelivery, though the retry message itself may be published more than once. A
+failure between the POST and recording its result can cause another POST.
+Technical gateway errors do not have a durable counter; exactly-once processing
+is not guaranteed.

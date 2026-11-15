@@ -1,35 +1,35 @@
-# ADR 004: облегчённая hexagonal architecture
+# ADR 004: Pragmatic hexagonal architecture
 
-## Статус
+## Status
 
-Принято.
+Accepted.
 
-## Контекст
+## Context
 
-Сервис мал, но имеет несколько внешних границ: HTTP API, PostgreSQL, RabbitMQ,
-gateway emulator и webhook endpoint. Смешивание этих деталей в router или
-FastStream handler усложнит тесты и сделает правила обработки платежа зависимыми
-от фреймворков. Полная Clean Architecture с отдельной богатой domain-моделью,
-generic repository, mediator и отдельным DI-контейнером добавит дублирование без
-пользы для данного объёма.
+The service is small but has several external boundaries: HTTP API, PostgreSQL,
+RabbitMQ, a gateway emulator, and a webhook endpoint. Mixing these details into
+the router or FastStream handler would make tests harder and tie payment rules
+to frameworks. Full Clean Architecture with a rich separate domain model, generic
+repository, mediator, and a separate dependency-injection container would add
+duplication without benefit at this scale.
 
-## Решение
+## Decision
 
-Используем облегчённые ports and adapters:
+Use a lightweight ports-and-adapters approach:
 
-- `application` содержит use case'ы и `Protocol`-порты;
-- `domain` содержит только типы и чистые правила payment;
-- `infrastructure` реализует порты через SQLAlchemy, FastStream и `httpx`;
-- `api` и `worker` — entrypoint'ы, которые валидируют транспортный ввод и
-  вызывают use case;
-- зависимости собираются явно в composition root.
+- `application` contains use cases and `Protocol` ports;
+- `domain` contains only payment types and pure rules;
+- `infrastructure` implements ports with SQLAlchemy, FastStream, and `httpx`;
+- `api` and `worker` are entry points that validate transport input and call
+  use cases;
+- dependencies are assembled explicitly in the composition root.
 
-`AsyncSession` является практическим Unit of Work в infrastructure. ORM-модель
-`Payment` не дублируется отдельной domain-сущностью.
+`AsyncSession` acts as a practical Unit of Work in the infrastructure layer.
+The ORM `Payment` model is not duplicated as a separate domain entity.
 
-## Последствия
+## Consequences
 
-Use case'ы можно проверять с fake-адаптерами, а интеграционные тесты — с
-реальными PostgreSQL и RabbitMQ. Структура позволяет заменить gateway или
-webhook transport без изменения бизнес-сценария, но не вводит лишних уровней
-абстракции.
+Use cases can be tested with fake adapters, while integration tests use real
+PostgreSQL and RabbitMQ. The structure allows the gateway or webhook transport
+to be replaced without changing the business flow, without adding unnecessary
+abstraction layers.
